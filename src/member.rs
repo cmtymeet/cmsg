@@ -534,8 +534,11 @@ impl Member {
     }
 
     /// Renew an existing group's certificate with the same stable ID and signer.
-    /// The candidate is exposed only to the trusted durable persistence callback;
-    /// failed writes and panics roll back local certificate and ratchet state.
+    /// The trusted persistence callback receives the candidate member and exact
+    /// outbound control bytes. It must atomically encrypt and durably save both
+    /// snapshot and outbox entry before returning success. Failed writes and panics
+    /// roll back local certificate and ratchet state. Returning the bytes does not
+    /// guarantee network delivery or storage freshness after a device restart.
     pub fn renew_admission(
         &mut self,
         grant: AdmissionGrant,
@@ -614,8 +617,7 @@ impl Member {
             original_credential: old_credential,
             committed: false,
         };
-        // Fail-first outbox boundary: exact outbound bytes follow runtime red.
-        persist(guard.member, &[])?;
+        persist(guard.member, &wire)?;
         guard.committed = true;
         Ok(wire)
     }
