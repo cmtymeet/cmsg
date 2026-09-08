@@ -139,6 +139,10 @@ impl Member {
         )
     }
 
+    pub(crate) fn authorization_time(&self) -> Result<u64, Error> {
+        self.clock.now()
+    }
+
     // Local encrypted history and recovery remain accessible after grant expiry.
     pub(crate) fn stored_member_id(&self) -> Result<String, Error> {
         verify_historical_credential(
