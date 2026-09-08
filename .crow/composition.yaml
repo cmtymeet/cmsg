@@ -31,5 +31,9 @@ steps:
       - npm ci --prefix cvld --ignore-scripts --no-audit --no-fund
       - npm run prepare:native --prefix cvld
       - npm ci --prefix cfrm/experiments/anonymous-permits --ignore-scripts --no-audit --no-fund
-      - timeout 1200 cargo build --locked --manifest-path cmsg/Cargo.toml --example composition
-      - CMSG_COMPOSITION_BINARY="$CARGO_TARGET_DIR/debug/examples/composition" timeout 600 node --test cmsg/experiments/composition/composition.test.mjs
+      - |
+        mkdir -p "$CARGO_TARGET_DIR"
+        flock "$CARGO_TARGET_DIR.ci.lock" bash -euc '
+          timeout 1200 cargo build --locked --manifest-path cmsg/Cargo.toml --example composition
+          CMSG_COMPOSITION_BINARY="$CARGO_TARGET_DIR/debug/examples/composition" timeout 600 node --test cmsg/experiments/composition/composition.test.mjs
+        '
