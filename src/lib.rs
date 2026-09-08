@@ -5,11 +5,13 @@
 //! must additionally verify the applicable cfrm capability; this crate does not
 //! claim private quota enforcement.
 mod admission;
+mod inbox;
 mod member;
 mod rendezvous;
 mod transport;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
+pub use inbox::{Acceptance, Inbox, Redemption};
 pub use member::{Invitation, Member, Received, TextMessage};
 pub use rendezvous::{RendezvousChallenge, RendezvousEndpoint};
 pub use transport::{OnionEndpoint, OnionTransport};
