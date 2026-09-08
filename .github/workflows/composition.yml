@@ -21,13 +21,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: corbet-labs/cvld
-          ref: 0f5515b63d901137894e6cadcfc587189913191e
+          ref: 9d8dfb642a0a9e53eed8069a757d400c82cd4b11
           path: cvld
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: corbet-labs/cfrm
-          ref: b680c6dd208a1abaffd3234e444d8b4729a0c784
+          ref: 507b63c775c4869d08f255d0a0c11866a2bf9249
           path: cfrm
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020

@@ -118,8 +118,7 @@ export async function runComposition() {
     allowanceIssuer.allocate(grants[0].memberId, 1);
     const request = await permits.preparePermit(epoch.public);
     const permit = await request.finish(await allowanceIssuer.issue(grants[0].memberId, request.request));
-    assert.equal(await permits.redeemPermit(epoch.public, ledger, permit, () => now), true);
-    assert.equal(await permits.redeemPermit(epoch.public, ledger, permit, () => now), false);
+    const redemption = permits.prepareRedemption(permit);
     registry.disconnect(sessions[0].token);
     allowanceIssuer.allocate(grants[0].memberId, 1);
     const extra = await permits.preparePermit(epoch.public);
@@ -131,7 +130,19 @@ export async function runComposition() {
     const restoredWallet = await client.unlockWallet({ prfOutput, scope: communityId, envelope: wallet.envelope });
     const wrappingKey = await restoredWallet.storageKey('cmsg');
     assert.deepEqual(wrappingKey, await wallet.storageKey('cmsg'));
-    write({ wrappingKey: [...wrappingKey] });
+    write({ wrappingKey: [...wrappingKey], recipientRedemption: [...Buffer.from(JSON.stringify(redemption))] });
+    // The real receiving client validates its Welcome and durably stores the
+    // encrypted pending attempt before asking the anonymous rules adapter.
+    const action = await read();
+    assert.deepEqual(Object.keys(action), ['redeemRequest']);
+    const callbackRequest = JSON.parse(Buffer.from(action.redeemRequest).toString('utf8'));
+    assert.deepEqual(callbackRequest, redemption);
+    assert.deepEqual(await permits.redeemIntroduction(epoch.public, ledger, callbackRequest, () => now), { accepted: true });
+    // A lost first response must be recoverable with the exact persisted claim.
+    assert.deepEqual(await permits.redeemIntroduction(epoch.public, ledger, callbackRequest, () => now), { accepted: true });
+    assert.deepEqual(await permits.redeemIntroduction(epoch.public, ledger, permits.prepareRedemption(permit), () => now), { accepted: false });
+    assert.equal(await permits.redeemPermit(epoch.public, ledger, permit, () => now), false);
+    write({ outcome: 'accepted' });
     const messaging = await read();
     child.stdin.end();
     assert.equal(await completion, 0, errorOutput);
@@ -144,6 +155,7 @@ export async function runComposition() {
     assert.deepEqual(registry.counts(), { members: 0, sessions: 0, replayMarkers: 0 });
     return { realAdmission: true, copiedCertificateRejected: true, certifiedDiscovery: true,
       firstContactPermitSpent: true, permitReplayRejected: true, reconnectCannotRefillAllowance: true,
+      interruptedSpendRetrySafe: true,
       ...messaging, offlinePresenceForgotten: true };
   } finally {
     registry?.close();

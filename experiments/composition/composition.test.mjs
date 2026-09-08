@@ -8,6 +8,9 @@ test('real admission, live discovery, anonymous allowance and private text compo
   assert.equal(result.copiedCertificateRejected, true);
   assert.equal(result.certifiedDiscovery, true);
   assert.equal(result.firstContactPermitSpent, true);
+  assert.equal(result.recipientGateEnforced, true);
+  assert.equal(result.recipientCheckpointRestored, true);
+  assert.equal(result.interruptedSpendRetrySafe, true);
   assert.equal(result.permitReplayRejected, true);
   assert.equal(result.reconnectCannotRefillAllowance, true);
   assert.equal(result.delivered, true);
