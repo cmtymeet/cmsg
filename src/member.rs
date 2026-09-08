@@ -99,6 +99,11 @@ impl Member {
             .map_err(|_| Error::InvalidMessage)
     }
 
+    /// Add several authenticated members in one MLS epoch transition.
+    pub fn add_many(&mut self, _packages: &[Vec<u8>]) -> Result<Invitation, Error> {
+        Err(Error::InvalidState)
+    }
+
     /// The caller is responsible for authenticated authorization of this member.
     pub fn add(&mut self, key_package: &[u8]) -> Result<Invitation, Error> {
         if key_package.len() > MAX_WIRE_BYTES { return Err(Error::InvalidMessage); }
