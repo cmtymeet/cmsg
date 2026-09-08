@@ -6,6 +6,7 @@
 //! claim private quota enforcement.
 mod admission;
 mod inbox;
+mod lifecycle;
 mod member;
 mod profile;
 mod rendezvous;
@@ -14,6 +15,7 @@ mod vault;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
 pub use inbox::{Acceptance, Inbox, Redemption};
+pub use lifecycle::Clock;
 pub use member::{Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;
 pub use rendezvous::{RendezvousChallenge, RendezvousEndpoint};
