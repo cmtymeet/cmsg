@@ -1,5 +1,4 @@
 //! Participant-local group identity display and epoch-scoped targeting.
-use crate::{Error, Member};
 use std::fmt;
 use zeroize::Zeroize;
 
@@ -41,17 +40,5 @@ impl Drop for ParticipantHandle {
         self.group_id.zeroize();
         self.member_id.zeroize();
         self.chat_public_key.zeroize();
-    }
-}
-impl Member {
-    /// Display authenticated roster identities, including expired stored members.
-    /// This alpha rejects duplicate member IDs; multi-device membership is separate.
-    pub fn participants(&self) -> Result<Vec<Participant>, Error> {
-        Err(Error::InvalidState)
-    }
-
-    /// Target the member shown by a current handle; reject stale or foreign handles.
-    pub fn remove_participant(&mut self, _handle: &ParticipantHandle) -> Result<Vec<u8>, Error> {
-        Err(Error::InvalidState)
     }
 }

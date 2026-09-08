@@ -1,11 +1,13 @@
 use crate::{
-    validate_text, verify_admission, AdmissionGrant, AdmissionTrust, Clock, Error, MAX_WIRE_BYTES,
+    validate_text, verify_admission, AdmissionGrant, AdmissionTrust, Clock, Error, Participant,
+    ParticipantHandle, MAX_WIRE_BYTES,
 };
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use tls_codec::{Deserialize as _, Serialize as _};
@@ -189,6 +191,9 @@ impl Member {
             return Err(Error::InvalidMessage);
         }
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
+        let now = self.clock.now()?;
+        let mut identities =
+            group_identities(self.group.as_ref().ok_or(Error::InvalidState)?, trust, now)?;
         let mut validated = Vec::with_capacity(packages.len());
         for wire in packages {
             if wire.len() > MAX_WIRE_BYTES {
@@ -198,12 +203,15 @@ impl Member {
                 .map_err(|_| Error::InvalidMessage)?
                 .validate(self.provider.crypto(), ProtocolVersion::Mls10)
                 .map_err(|_| Error::InvalidMessage)?;
-            verify_credential(
+            let identity = verify_credential(
                 package.leaf_node().credential(),
                 package.leaf_node().signature_key().as_slice(),
                 trust,
-                self.clock.now()?,
+                now,
             )?;
+            if !identities.insert(identity) {
+                return Err(Error::Admission);
+            }
             validated.push(package);
         }
         let group = self.group.as_mut().ok_or(Error::InvalidState)?;
@@ -297,6 +305,8 @@ impl Member {
         outcome
     }
 
+    /// Low-level MLS primitive: leaf indices are meaningful only in their epoch.
+    /// User-facing clients should use remove_participant with a current roster handle.
     pub fn remove(&mut self, leaf: u32) -> Result<Vec<u8>, Error> {
         self.member_id()?;
         let group = self.group.as_mut().ok_or(Error::InvalidState)?;
@@ -310,6 +320,62 @@ impl Member {
             .merge_pending_commit(&self.provider)
             .map_err(|_| Error::InvalidState)?;
         Ok(wire)
+    }
+
+    /// Display authenticated local participants, including expired stored members.
+    /// Duplicate stable IDs are rejected until a multi-device protocol is defined.
+    pub fn participants(&self) -> Result<Vec<Participant>, Error> {
+        self.stored_member_id()?;
+        let group = self.group.as_ref().ok_or(Error::InvalidState)?;
+        let trust = self.trust.as_ref().ok_or(Error::Admission)?;
+        let now = self.clock.now()?;
+        verify_group_history(group, trust, now)?;
+        group
+            .members()
+            .map(|member| {
+                let member_id = verify_historical_credential(
+                    &member.credential,
+                    &member.signature_key,
+                    trust,
+                    now,
+                )?;
+                Ok(Participant {
+                    handle: ParticipantHandle {
+                        group_id: group.group_id().as_slice().to_vec(),
+                        epoch: group.epoch().as_u64(),
+                        leaf: member.index.u32(),
+                        member_id: member_id.clone(),
+                        chat_public_key: member.signature_key.clone(),
+                    },
+                    member_id,
+                    chat_public_key: member.signature_key,
+                })
+            })
+            .collect()
+    }
+
+    /// Remove exactly the participant represented by a current local roster handle.
+    /// Handles fail after every epoch transition, including removal and leaf reuse.
+    pub fn remove_participant(&mut self, handle: &ParticipantHandle) -> Result<Vec<u8>, Error> {
+        self.member_id()?;
+        let group = self.group.as_ref().ok_or(Error::InvalidState)?;
+        if group.group_id().as_slice() != handle.group_id || group.epoch().as_u64() != handle.epoch
+        {
+            return Err(Error::InvalidState);
+        }
+        let member = group
+            .member_at(LeafNodeIndex::new(handle.leaf))
+            .ok_or(Error::InvalidState)?;
+        let id = verify_historical_credential(
+            &member.credential,
+            &member.signature_key,
+            self.trust.as_ref().ok_or(Error::Admission)?,
+            self.clock.now()?,
+        )?;
+        if id != handle.member_id || member.signature_key != handle.chat_public_key {
+            return Err(Error::Admission);
+        }
+        self.remove(handle.leaf)
     }
 
     pub fn send(&mut self, text: &[u8]) -> Result<Vec<u8>, Error> {
@@ -704,10 +770,22 @@ fn verify_historical_credential(
     verify_admission(&grant, trust, key, grant.issued_at)
 }
 fn verify_group_history(group: &MlsGroup, trust: &AdmissionTrust, now: u64) -> Result<(), Error> {
+    group_identities(group, trust, now).map(|_| ())
+}
+fn group_identities(
+    group: &MlsGroup,
+    trust: &AdmissionTrust,
+    now: u64,
+) -> Result<BTreeSet<String>, Error> {
+    let mut identities = BTreeSet::new();
     for member in group.members() {
-        verify_historical_credential(&member.credential, &member.signature_key, trust, now)?;
+        let id =
+            verify_historical_credential(&member.credential, &member.signature_key, trust, now)?;
+        if !identities.insert(id) {
+            return Err(Error::Admission);
+        }
     }
-    Ok(())
+    Ok(identities)
 }
 
 fn verify_leaf_change(
