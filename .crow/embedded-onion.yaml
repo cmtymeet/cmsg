@@ -23,6 +23,8 @@ steps:
       - |
         mkdir -p "$CARGO_TARGET_DIR"
         flock "$CARGO_TARGET_DIR.ci.lock" bash -euc '
-          cargo fmt --manifest-path experiments/embedded-onion/Cargo.toml --all -- --check
-          timeout 1800 cargo test --locked --manifest-path experiments/embedded-onion/Cargo.toml --all-targets -- --nocapture
+          ci_test_status=0
+          cargo fmt --manifest-path experiments/embedded-onion/Cargo.toml --all -- --check || ci_test_status=1
+          timeout 1800 cargo test --locked --manifest-path experiments/embedded-onion/Cargo.toml --all-targets -- --nocapture || ci_test_status=1
+          exit "$ci_test_status"
         '
