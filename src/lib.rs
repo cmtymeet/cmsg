@@ -1,9 +1,15 @@
 //! Experimental client-side MLS text messaging. No server holds content keys.
 //!
-//! This crate is a cryptographic/transport component, not admission enforcement.
-//! Signed cvld admission binds community identity to MLS signing keys. Applications
-//! must additionally verify the applicable cfrm capability; this crate does not
-//! claim private quota enforcement.
+//! Signed cvld admission binds community identities to MLS signing keys. [`Member`]
+//! is the low-level conversation primitive. [`Inbox`] adds recipient-side
+//! first-contact enforcement through a trusted cfrm redemption callback and
+//! encrypted local checkpoints. Calling `Member::join` alone does not spend a
+//! first-contact allowance.
+//!
+//! Hosts supply passkey-derived wrapping material, durable storage and verified
+//! onion networking. Raw MLS objects must not be routed through an operator's
+//! logging relay. This alpha does not provide mobile bindings, storage rollback
+//! protection, guaranteed delivery or an audited anonymity system.
 mod admission;
 mod inbox;
 mod lifecycle;
