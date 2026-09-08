@@ -7,6 +7,7 @@
 mod admission;
 mod inbox;
 mod member;
+mod profile;
 mod rendezvous;
 mod transport;
 mod vault;
@@ -14,6 +15,7 @@ mod vault;
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
 pub use inbox::{Acceptance, Inbox, Redemption};
 pub use member::{Invitation, Member, Received, TextMessage};
+pub use profile::ProfileChallenge;
 pub use rendezvous::{RendezvousChallenge, RendezvousEndpoint};
 pub use transport::{OnionEndpoint, OnionTransport};
 

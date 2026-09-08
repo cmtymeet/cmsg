@@ -475,3 +475,50 @@ fn local_blocks_persist_and_stop_unknown_and_previously_known_inviters_before_sp
         Acceptance::Blocked
     );
 }
+
+#[test]
+fn inbox_accepts_the_same_context_lengths_as_member_and_binds_restore_context() {
+    for length in [1, 128] {
+        let (_, mut b, welcome) = invitation();
+        let mut inbox = Inbox::new(&b).unwrap();
+        let context = vec![44; length];
+        assert!(b.snapshot(&KEY, &context).is_ok());
+        let mut saved = Vec::new();
+        assert_eq!(
+            inbox
+                .accept(
+                    &mut b,
+                    &welcome,
+                    Some(b"recipient-claim"),
+                    &KEY,
+                    &context,
+                    |state| {
+                        saved = state.to_vec();
+                        Ok(())
+                    },
+                    |_| Redemption::Accepted
+                )
+                .unwrap(),
+            Acceptance::Joined
+        );
+        assert!(Inbox::restore(&saved, &KEY, &context).is_ok());
+        assert!(Inbox::restore(&saved, &KEY, &vec![45; length]).is_err());
+    }
+    for length in [0, 129] {
+        let (_, mut b, welcome) = invitation();
+        let mut inbox = Inbox::new(&b).unwrap();
+        let context = vec![44; length];
+        assert!(b.snapshot(&KEY, &context).is_err());
+        assert!(inbox
+            .accept(
+                &mut b,
+                &welcome,
+                Some(b"recipient-claim"),
+                &KEY,
+                &context,
+                |_| panic!("invalid context cannot persist"),
+                |_| panic!("invalid context cannot spend")
+            )
+            .is_err());
+    }
+}
