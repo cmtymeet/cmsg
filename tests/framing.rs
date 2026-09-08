@@ -53,7 +53,7 @@ async fn outbound_frame_is_big_endian_and_exactly_bounded() {
 
 #[tokio::test]
 async fn zero_and_oversize_headers_fail_without_waiting_for_a_body() {
-    for declared in [0, (MAX_WIRE_BYTES + 1) as u32] {
+    for declared in [0, 65, (MAX_WIRE_BYTES + 1) as u32, u32::MAX] {
         let (mut framed, mut peer) = pair(64, Duration::from_secs(1)).await;
         peer.write_all(&declared.to_be_bytes()).await.unwrap();
         assert_eq!(
