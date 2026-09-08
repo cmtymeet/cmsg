@@ -1,30 +1,35 @@
 //! Experimental client-side MLS text messaging. No server holds content keys.
-use std::net::SocketAddr;
+//!
+//! This crate is a cryptographic/transport component, not admission enforcement.
+//! Applications must verify cvld eligibility and cfrm capabilities before invoking
+//! it. No public API claims those independent proofs have been checked.
+mod member;
+mod transport;
 
+pub use member::{Invitation, Member, Received};
+pub use transport::{OnionEndpoint, OnionTransport};
+
+/// Maximum application text length in UTF-8 bytes, not characters.
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
+/// Bound untrusted serialized MLS objects before parsing.
+pub const MAX_WIRE_BYTES: usize = 1024 * 1024;
+
+/// Deliberately coarse errors: never include keys, plaintext or peer identifiers.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Error { Unimplemented, InvalidText, InvalidMessage, InvalidStore, InvalidRoute, Transport }
-#[derive(Debug)]
-pub enum Received { Text(String), MembershipChanged }
-pub struct Invitation { pub commit: Vec<u8>, pub welcome: Vec<u8> }
-pub struct Member;
-impl Member {
-    pub fn new() -> Result<Self, Error> { Err(Error::Unimplemented) }
-    pub fn create_group(&mut self) -> Result<(), Error> { Err(Error::Unimplemented) }
-    pub fn key_package(&self) -> Result<Vec<u8>, Error> { Err(Error::Unimplemented) }
-    pub fn add(&mut self, _key_package: &[u8]) -> Result<Invitation, Error> { Err(Error::Unimplemented) }
-    pub fn join(&mut self, _welcome: &[u8]) -> Result<(), Error> { Err(Error::Unimplemented) }
-    pub fn remove(&mut self, _leaf: u32) -> Result<Vec<u8>, Error> { Err(Error::Unimplemented) }
-    pub fn send(&mut self, _text: &[u8]) -> Result<Vec<u8>, Error> { Err(Error::Unimplemented) }
-    pub fn receive(&mut self, _wire: &[u8]) -> Result<Received, Error> { Err(Error::Unimplemented) }
-    pub fn snapshot(&self, _key: &[u8;32], _context: &[u8]) -> Result<Vec<u8>, Error> { Err(Error::Unimplemented) }
-    pub fn restore(_sealed: &[u8], _key: &[u8;32], _context: &[u8]) -> Result<Self, Error> { Err(Error::Unimplemented) }
+pub enum Error {
+    InvalidText,
+    InvalidMessage,
+    InvalidState,
+    InvalidStore,
+    InvalidRoute,
+    Transport,
+    Randomness,
 }
-pub fn validate_text(_text: &[u8]) -> Result<&str, Error> { Err(Error::Unimplemented) }
-pub struct OnionEndpoint;
-impl OnionEndpoint { pub fn parse(_host: &str, _port: u16) -> Result<Self, Error> { Err(Error::Unimplemented) } }
-pub struct OnionTransport;
-impl OnionTransport {
-    pub fn new(_proxy: SocketAddr) -> Result<Self, Error> { Err(Error::Unimplemented) }
-    pub async fn connect(&self, _endpoint: &OnionEndpoint) -> Result<tokio::net::TcpStream, Error> { Err(Error::Unimplemented) }
+
+/// Interpret text literally. This function performs no markup parsing or I/O.
+pub fn validate_text(text: &[u8]) -> Result<&str, Error> {
+    if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+        return Err(Error::InvalidText);
+    }
+    std::str::from_utf8(text).map_err(|_| Error::InvalidText)
 }
