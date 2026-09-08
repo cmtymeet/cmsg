@@ -28,3 +28,16 @@ steps:
           timeout 1200 cargo test --locked --manifest-path experiments/first-contact-release/Cargo.toml --all-targets -- --nocapture || ci_test_status=1
           exit "$ci_test_status"
         '
+  - name: capture-formatted-source
+    image: bash
+    depends_on: [withheld-first-contact-tests]
+    when:
+      - status: [success, failure]
+    commands:
+      - |
+        cargo fmt --manifest-path experiments/first-contact-release/Cargo.toml --all
+        ci_artifact_dir="/workspaces/component-releases/cmsg/$CI_COMMIT_SHA"
+        mkdir -p "$ci_artifact_dir"
+        tar --create --file "$ci_artifact_dir/first-contact-release-formatted.tar" --directory experiments/first-contact-release src/lib.rs tests/contracts.rs
+        (cd "$ci_artifact_dir" && sha256sum first-contact-release-formatted.tar > first-contact-release-formatted.tar.sha256)
+        cat "$ci_artifact_dir/first-contact-release-formatted.tar.sha256"

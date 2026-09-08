@@ -28,3 +28,18 @@ steps:
           timeout 1800 cargo test --locked --manifest-path experiments/embedded-onion/Cargo.toml --all-targets -- --nocapture || ci_test_status=1
           exit "$ci_test_status"
         '
+  - name: capture-formatted-source
+    image: bash
+    depends_on: [owned-onion-adapter-tests]
+    when:
+      - status: [success, failure]
+    commands:
+      - |
+        # Tests above use the verified source. Formatting occurs afterward;
+        # retrieve/commit these owned files before claiming a final green source.
+        cargo fmt --manifest-path experiments/embedded-onion/Cargo.toml --all
+        ci_artifact_dir="/workspaces/component-releases/cmsg/$CI_COMMIT_SHA"
+        mkdir -p "$ci_artifact_dir"
+        tar --create --file "$ci_artifact_dir/embedded-onion-formatted.tar" --directory experiments/embedded-onion src/lib.rs src/main.rs tests/contracts.rs
+        (cd "$ci_artifact_dir" && sha256sum embedded-onion-formatted.tar > embedded-onion-formatted.tar.sha256)
+        cat "$ci_artifact_dir/embedded-onion-formatted.tar.sha256"
