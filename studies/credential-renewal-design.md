@@ -28,6 +28,8 @@ An expired old certificate may authorize a renewal message only through a narrow
 
 OpenMLS already supports credential changes through `MlsGroup::self_update` and `LeafNodeParameters::with_credential_with_key`; this should use that maintained protocol path. Sources: [OpenMLS 0.9 updates](https://raw.githubusercontent.com/openmls/openmls/openmls-v0.9.0/openmls/src/group/mls_group/updates.rs), [leaf parameter builder](https://raw.githubusercontent.com/openmls/openmls/openmls-v0.9.0/openmls/src/treesync/node/leaf_node.rs).
 
+The convenience `self_update` method consumes queued proposals. Our bounded renewal should instead use `CommitBuilder::consume_proposal_store(false)` with the replacement leaf parameters and no additional proposals. On receipt, `StagedCommit::queued_proposals()` and `update_path_leaf_node()` expose the exact checks needed before merging: no proposals in an expired-sender recovery, and a current same-identity/key credential in the authenticated update path. Sources: [commit builder](https://raw.githubusercontent.com/openmls/openmls/openmls-v0.9.0/openmls/src/group/mls_group/commit_builder.rs), [staged commit inspection](https://raw.githubusercontent.com/openmls/openmls/openmls-v0.9.0/openmls/src/group/mls_group/staged_commit.rs).
+
 Expiry remains an application admission check. An existing member already holds group keys and a modified client can bypass local expiry checks. Excluding that member from future cryptographic epochs requires an MLS removal and rekey. Neither certificate expiry nor this proposed renewal procedure erases previously delivered keys or plaintext.
 
 ## Required fail-first experiments
@@ -43,3 +45,13 @@ Use a trusted injectable clock for deterministic tests; do not sleep until certi
 7. A new first contact after renewal still goes through Inbox. A certified same-ID counterpart remains known or locally blocked, rather than receiving a new identity through certificate rotation.
 
 Existing membership concurrency, missed-control delivery and durable multi-device state remain separate integration work. This review does not establish a production-ready renewal state machine.
+
+In particular, a long offline backlog may contain control messages whose senders' certificates have since expired. The proposed strict current-sender rule cannot traverse an arbitrary such backlog. The bounded catch-up test keeps the committer current. A fresh introduction/Welcome from an eligible member, through Inbox, may be required for later recovery; accepting every historical control message is not an implicit fallback.
+
+## Prepared API specifications
+
+`26add9a` adds seven fail-first lifecycle tests and explicit stubs. They have not executed at the time of this study update. The proposed API is `Clock::now()`, `Member::new_with_clock`, `Member::restore_with_clock`, `Member::renew_admission` and `Member::receive_control`. Existing constructors keep their system-clock behavior. The injected clock is trusted caller-owned process state and is not serialized into a snapshot.
+
+`renew_admission` targets an already joined group and returns its MLS commit only after a caller-supplied durable persistence callback succeeds on the candidate member. The callback can encrypt a snapshot using its existing cvld-derived wrapping material. Both a returned persistence error and a panic must restore the original in-memory certificate and ratchet. `receive_control` returns no application text. Neither new method bypasses Inbox for a new invitation.
+
+The hostile-peer specifications construct actual upstream OpenMLS messages, including a renewed certificate bundled with an addition and a valid certificate for a different stable identity under the existing signing key. They require rejection without consuming state needed for a subsequent legitimate renewal. These specifications describe intended behavior, not verified implementation.
