@@ -1,6 +1,6 @@
 # Crate alpha release review
 
-The candidate is `cmsg 0.1.0-alpha.1`, a reusable Rust integration library rather than a deployable messenger. The manifest permits publication only to crates.io; packaging and this review do not upload it. The exact archive and its external consumer must pass before maintainer review and publication. FSL-1.1-ALv2 covers this repository's code; dependencies retain their upstream licenses.
+[`cmsg 0.1.0-alpha.1`](https://crates.io/crates/cmsg/0.1.0-alpha.1) is published as a reusable Rust integration library rather than a deployable messenger. The maintainer uploaded the exact archive after its external consumer and source comparison passed; the checker itself does not publish packages. FSL-1.1-ALv2 covers this repository's code; dependencies retain their upstream licenses.
 
 ## Useful public API
 
@@ -26,7 +26,11 @@ A callback error or panic rolls back in-memory state but cannot undo a host writ
 
 Crow repository 10, pipeline 7 at `b666cd7c915038796956e20544539d0394090d89` passed all 55 native tests and actual cross-runtime profile-signature verification. The roster's seven tests first failed in pipeline 6 at `6b14d6c04f18e2d2dbb5b355248350eae832f8ab`. Renewal outbox specification `8552c1c` then failed exactly its new restart assertion in pipeline 8 at `4d141953833818dced13c97cc7b9ff806a05ec80`, with the previous 55 tests still passing. Fix `0371e4a` passed all 56 tests and profile interoperability in pipeline 9 at `0371e4ad5e7e39720f9a333d70579c2b208786da`.
 
-The package allowlist contains Rust source, tests and their public synthetic fixture, Rust examples, license, README, Cargo metadata/lock and Markdown documentation. It excludes CI workflows, Python/JavaScript runners, package-consumer infrastructure, caches, archives and private handoff files. Cargo adds its normalized manifest and may add VCS metadata. The [external consumer](../experiments/package-consumer/README.md) checks actual archive contents and uses only public exports for a real certified pair exchange, stable roster identity and encrypted restore. Package execution is a separate check; preparation alone is not a passing artifact claim.
+The package allowlist contains Rust source, tests and their public synthetic fixture, Rust examples, license, README, Cargo metadata/lock and Markdown documentation. It excludes CI workflows, Python/JavaScript runners, package-consumer infrastructure, caches, archives and private handoff files. Cargo adds its normalized manifest and may add VCS metadata. The [external consumer](../experiments/package-consumer/README.md) checks actual archive contents and uses only public exports for a real certified pair exchange, stable roster identity and encrypted restore.
+
+[Crow repository 10, pipeline 10](https://crow.corbet.ch/repos/10/pipeline/10) passed the complete package check at `4af0dad8dcb16ea04361d18c4fe6e0270426a17b`: packaged source/document comparison to the verified checkout, normalized metadata and locked dependencies, plus certified pair exchange, stable roster identity, encrypted restore, replay rejection and continued exchange from the external consumer. The archive contains 38 files and is 68,180 bytes. Its SHA-256 is `4b9f5e0df762b1bc3a104bd6d08323db086adbf26b611e53a0db18dde6207d49`.
+
+The maintainer published those exact bytes on 2026-09-08 and independently verified the anonymous registry version/download checksum and the `julian-corbet` registry owner. Later documentation commits do not change the published archive. The native behavioral evidence remains the 56-test run above; the package check compiles and exercises the actual distributed library, without claiming another full native suite or mobile check.
 
 The current worker reports Rust 1.97.1 and Cargo 1.97.0. It has no rustup and neither Android arm64 nor iOS arm64 target standard library installed, as observed in pipeline 8. The alpha therefore conservatively declares `rust-version = "1.97.1"`, the tested compiler, rather than claiming the former untested minimum of 1.91. This floor can be lowered after a real older-toolchain check.
 
@@ -34,7 +38,7 @@ Earlier source `b4ac4f9` passed both mobile arm64 target checks in [GitHub run 3
 
 ## Release and deployment limits
 
-The bounded crate-release check still requires a passing external consumer against the exact packaged bytes and maintainer review of the resulting artifact and publication metadata. Registry publication remains a separate action. This source review alone does not authorize or claim that publication occurred.
+The bounded crate-release checks and publication are complete for this exact alpha artifact. That establishes a usable, independently consumed package with the tested behavior above; it does not establish production readiness or expand the supported deployment boundary.
 
 Production use additionally requires security review, verified Tor ownership/network confinement and device integration, atomic monotonic single-writer persistence, recovery and control-message delivery, and production cvld/cfrm adapters. Authentic old snapshots can still roll back or fork state. An expired credential does not erase an existing participant's group keys; removal and rekey are required for future-epoch exclusion. Signing-key rotation, issuer/policy migration and multi-device membership remain separate protocols. Text recipients can copy what they read.
 
