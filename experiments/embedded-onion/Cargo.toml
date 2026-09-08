@@ -21,6 +21,7 @@ data-encoding = "2.9"
 ed25519-dalek = "2.2"
 sha2 = "0.10"
 safelog = "=0.9.1"
+rustls = { version = "=0.23.44", default-features = false, features = ["std", "tls12"] }
 
 [profile.test.package."*"]
 opt-level = 3

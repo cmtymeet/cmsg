@@ -27,6 +27,12 @@ pub enum Failure {
 }
 pub type Result<T> = std::result::Result<T, Failure>;
 
+/// Configure the process TLS provider before constructing an Arti client.
+/// Pending implementation: the hosted regression must fail first.
+pub fn initialize_tls_provider() -> Result<()> {
+    Err(Failure::Configuration)
+}
+
 pub struct OwnedState {
     root: tempfile::TempDir,
 }

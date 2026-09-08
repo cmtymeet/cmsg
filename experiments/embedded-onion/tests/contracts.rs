@@ -1,5 +1,6 @@
 use cmsg_embedded_onion_experiment::{
-    allowed_request, dial_checked, mls_round_trip, Failure, OwnedState, SessionScope,
+    allowed_request, dial_checked, initialize_tls_provider, mls_round_trip, Failure, OwnedState,
+    SessionScope,
 };
 use std::{
     future::pending,
@@ -19,6 +20,33 @@ impl Drop for Dropped {
     fn drop(&mut self) {
         self.0.store(true, Ordering::SeqCst);
     }
+}
+
+#[test]
+fn tls_startup_installs_one_provider_and_constructs_a_real_client_without_network() {
+    assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+    let starters: Vec<_> = (0..8)
+        .map(|_| std::thread::spawn(initialize_tls_provider))
+        .collect();
+    for starter in starters {
+        assert_eq!(starter.join().unwrap(), Ok(()));
+    }
+    let first = rustls::crypto::CryptoProvider::get_default()
+        .expect("startup must select a provider before any TLS builder")
+        .clone();
+    let configuration = rustls::ClientConfig::builder()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    let _client = rustls::ClientConnection::new(
+        Arc::new(configuration),
+        "synthetic.invalid".try_into().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(initialize_tls_provider(), Ok(()));
+    assert!(Arc::ptr_eq(
+        &first,
+        rustls::crypto::CryptoProvider::get_default().unwrap()
+    ));
 }
 
 #[test]
