@@ -56,10 +56,10 @@ impl fmt::Debug for Received {
 /// Memory storage is client-local; persistence is available only as ciphertext.
 pub struct Member {
     provider: OpenMlsRustCrypto,
-    signer: SignatureKeyPair,
-    credential: CredentialWithKey,
+    pub(crate) signer: SignatureKeyPair,
+    pub(crate) credential: CredentialWithKey,
     group: Option<MlsGroup>,
-    trust: Option<AdmissionTrust>,
+    pub(crate) trust: Option<AdmissionTrust>,
     history: Vec<TextMessage>,
 }
 

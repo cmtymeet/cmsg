@@ -10,11 +10,12 @@ use tokio::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 4 {
-        return Err("expected SOCKS_ADDR ONION_HOST SERVICE_BIND".into());
+    if args.len() != 4 && args.len() != 5 {
+        return Err("expected SOCKS_ADDR ONION_HOST SERVICE_BIND [ONION_PORT]".into());
     }
     let transport = OnionTransport::new(args[1].parse()?).map_err(|_| "route invalid")?;
-    let endpoint = OnionEndpoint::parse(&args[2], 80).map_err(|_| "onion invalid")?;
+    let port = args.get(4).map(|p| p.parse()).transpose()?.unwrap_or(80);
+    let endpoint = OnionEndpoint::parse(&args[2], port).map_err(|_| "onion invalid")?;
     let listener = TcpListener::bind(&args[3]).await?;
     let mut sender = synthetic::member();
     let mut receiver = synthetic::member();
