@@ -1,8 +1,8 @@
 # Credential renewal: review findings and proposed checks
 
-This records the source-review findings and intended renewal behavior. Implementation `7e2d407` now awaits successful runtime validation; it is not yet passing evidence. The cvld admission verifier remains strict. Runtime status is recorded in [the implementation study](implementation-experiments.md).
+This records the source-review findings, implemented renewal boundary and remaining recovery limits. The lifecycle checks now pass as part of the 48-test native suite at `8ede4f139e452f37733ac7cfe6e3ca32f8d3d30f`, Crow repository 10, pipeline 4. The cvld admission verifier remains strict. Detailed runtime evidence is recorded in [the implementation study](implementation-experiments.md).
 
-## Observed behavior
+## Behavior found before the renewal change
 
 `Member::send` requires the local member's current cvld certificate. `Member::receive` requires both the recipient's current certificate and the actual message sender's current certificate. An unrelated inactive member with an expired certificate does not stop ordinary text between two still-authorized members.
 
@@ -10,7 +10,7 @@ Membership changes have a different failure: after merging a candidate commit in
 
 The local history snapshot can be decrypted after expiry. However, the current receive entry check also prevents an expired member from processing control messages needed to catch up after an offline period. Adding a renewal method alone would not resolve that case.
 
-## Proposed authorization boundary
+## Authorization boundary
 
 | Operation or role | Required validation |
 |---|---|
@@ -50,8 +50,10 @@ In particular, a long offline backlog may contain control messages whose senders
 
 ## Prepared API specifications
 
-`26add9a` adds seven fail-first lifecycle tests and explicit stubs. All seven compiled and failed at the clock constructor in Crow repository 10, pipeline 1, running public commit `10f20212c93dc18deaf4819504b7c0af705542b8`. Implementation `7e2d407` follows that red evidence and awaits its own successful run. The API is `Clock::now()`, `Member::new_with_clock`, `Member::restore_with_clock`, `Member::renew_admission` and `Member::receive_control`. Existing constructors keep their system-clock behavior. The injected clock is trusted caller-owned process state and is not serialized into a snapshot.
+`26add9a` adds seven fail-first lifecycle tests and explicit stubs. All seven compiled and failed at the clock constructor in Crow repository 10, pipeline 1, running public commit `10f20212c93dc18deaf4819504b7c0af705542b8`. Implementation `7e2d407` follows that red evidence. A future-issued-history regression subsequently failed before fix `cfe9498`; the full native suite passed in pipeline 4 at `8ede4f139e452f37733ac7cfe6e3ca32f8d3d30f`. The API is `Clock::now()`, `Member::new_with_clock`, `Member::restore_with_clock`, `Member::renew_admission` and `Member::receive_control`. Existing constructors keep their system-clock behavior. The injected clock is trusted caller-owned process state and is not serialized into a snapshot.
 
 `renew_admission` targets an already joined group and returns its MLS commit only after a caller-supplied durable persistence callback succeeds on the candidate member. The callback can encrypt a snapshot using its existing cvld-derived wrapping material. Both a returned persistence error and a panic must restore the original in-memory certificate and ratchet. `receive_control` returns no application text. Neither new method bypasses Inbox for a new invitation.
 
-The hostile-peer specifications construct actual upstream OpenMLS messages, including a renewed certificate bundled with an addition and a valid certificate for a different stable identity under the existing signing key. They require rejection without consuming state needed for a subsequent legitimate renewal. These specifications describe intended behavior, not verified implementation.
+The hostile-peer specifications construct actual upstream OpenMLS messages, including a renewed certificate bundled with an addition and a valid certificate for a different stable identity under the existing signing key. The passing checks demonstrate rejection without consuming state needed for a subsequent legitimate renewal, within the bounded cases above.
+
+The current persistence callback receives candidate state before the outbound commit is returned. A crash after that durable write can still lose the unsent commit. The next persistence slice must supply both candidate member and exact control bytes to the callback, allowing an encrypted client-owned outbox checkpoint. This is distinct from guaranteeing network delivery, peer availability or arbitrary offline recovery. Low-level add/remove continue to require host-managed persistence and delivery.
