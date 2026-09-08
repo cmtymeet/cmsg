@@ -11,6 +11,7 @@
 //! logging relay. This alpha does not provide mobile bindings, storage rollback
 //! protection, guaranteed delivery or an audited anonymity system.
 mod admission;
+mod enrollment;
 mod framing;
 mod inbox;
 mod lifecycle;
@@ -23,6 +24,7 @@ mod transport;
 mod vault;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
+pub use enrollment::SemaphoreEnrollmentChallenge;
 pub use framing::FramedStream;
 pub use inbox::{Acceptance, Inbox, Redemption};
 pub use lifecycle::Clock;
