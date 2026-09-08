@@ -3,13 +3,12 @@
 | Component | Responsibility | State boundary |
 |---|---|---|
 | cvld | Passkey authentication, local credential unlocking and admission eligibility | Client private keys; protected factor/duplicate-use state at the gate; public authentication/verification material; no behavioral sanctions |
-| cfrm | Live member discovery and rendezvous | Short-lived presence leases; profiles remain member-held; no offline directory or operator profile store |
-| crls, working name | Deterministic quotas, reciprocity, standing and optional epoch votes | Minimal durable anti-reset/double-spend state; private-state proofs are a research dependency |
+| cfrm | Entire public sphere: live discovery, rendezvous, quotas, reciprocity, standing and optional epoch votes | Short-lived presence leases; member-held profiles; minimal durable rule state to prevent allowance resets and double spending |
 | cmsg | Private text conversations and encrypted local history | Client-held content and keys; bounded encrypted relay state if selected |
 
-These are repository boundaries. cvld encapsulates both passkeys and eligibility; there is no separate clgn repository. Deployment boundaries are an implementation choice. Authentication should not become a global tracking endpoint. Admission credentials should be presented locally to relying services where possible instead of calling cvld for each message.
+These are three repository boundaries: cvld, cfrm and cmsg. cvld encapsulates both passkeys and eligibility; cfrm encapsulates the public sphere and its rules. There are no separate clgn or crls repositories. Deployment boundaries are an implementation choice. Authentication should not become a global tracking endpoint. Admission credentials should be presented locally to relying services where possible instead of calling cvld for each message.
 
-A presence lease expires after disconnect or missed heartbeats; a network partition is not instantly detectable. Peers may retain information they have already received. Rules state must survive disconnect or a malicious client can reset allowances. Keeping that state in crls allows cfrm's own live roster to remain transient.
+A presence lease expires after disconnect or missed heartbeats; a network partition is not instantly detectable. Peers may retain information they have already received. Rules state must survive disconnect or a malicious client can reset allowances. Within cfrm, separate the transient live roster from the minimum durable rule state; retaining the latter does not require storing profiles or a contact graph.
 
 No component accepts content reports, maintains a moderator queue or asks an operator to arbitrate private conversations. Conduct rules operate on protocol-valid numerical events and local recipient choices.
 

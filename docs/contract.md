@@ -6,7 +6,7 @@ Messages are end-to-end encrypted between two or more participants. The applicat
 
 The operator holds no content keys or plaintext message store. Local history and private credentials are encrypted. Passkey-based local key wrapping is a candidate; the passkey signing key is not itself a database encryption key. Device recovery and PRF support need validation.
 
-Admission requires cvld eligibility and the rules layer's applicable capability. Limits concern first contacts under an explicit policy; ordinary replies and existing conversations require separately specified rules. Clients must not be trusted to self-report counts honestly. Cryptographically authenticated accounting and double-spend prevention remain unsolved integration work.
+Admission requires cvld eligibility and cfrm's applicable rules capability. Limits concern first contacts under an explicit policy; ordinary replies and existing conversations require separately specified rules. Clients must not be trusted to self-report counts honestly. Cryptographically authenticated accounting and double-spend prevention remain unsolved integration work.
 
 ## Network identity boundary
 
@@ -22,7 +22,7 @@ No design can prevent a recipient from copying deliberately shared content or id
 
 Operational telemetry should consist of aggregate success/failure counts and coarse latency buckets, with a privacy budget and release threshold to be defined. Do not attach account, recipient, group or conversation IDs to events. Even apparently anonymous timing can correlate activity.
 
-The rules layer must validate permitted resource use without receiving the contact graph. Candidate mechanisms include anonymous one-use capabilities and private state transitions. Neither conventional E2EE nor a messaging library supplies this automatically. Persistent spent-token or state-commitment records may be necessary; they must be scoped and retained only as required.
+cfrm must validate permitted resource use without receiving the private contact graph. Candidate mechanisms include anonymous one-use capabilities and private state transitions. Neither conventional E2EE nor a messaging library supplies this automatically. Persistent spent-token or state-commitment records may be necessary; they must be scoped and retained only as required.
 
 Rules control participation in this protocol. They cannot prevent consenting people from communicating through a modified client or unrelated channel outside it.
 
