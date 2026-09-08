@@ -22,11 +22,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> FramedStream<S> {
     /// Require 1..=MAX_WIRE_BYTES and a positive deadline of at most 60 seconds.
     /// Each read or write gets one deadline covering its whole frame; a write
     /// includes flushing. Payload bytes remain opaque to this generic codec.
-    pub fn new(
-        stream: S,
-        max_frame_bytes: usize,
-        frame_timeout: Duration,
-    ) -> Result<Self, Error> {
+    pub fn new(stream: S, max_frame_bytes: usize, frame_timeout: Duration) -> Result<Self, Error> {
         if max_frame_bytes == 0
             || max_frame_bytes > MAX_WIRE_BYTES
             || frame_timeout.is_zero()
