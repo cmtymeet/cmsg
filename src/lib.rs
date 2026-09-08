@@ -10,6 +10,7 @@ mod lifecycle;
 mod member;
 mod profile;
 mod rendezvous;
+mod roster;
 mod transport;
 mod vault;
 
@@ -19,6 +20,7 @@ pub use lifecycle::Clock;
 pub use member::{Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;
 pub use rendezvous::{RendezvousChallenge, RendezvousEndpoint};
+pub use roster::{Participant, ParticipantHandle};
 pub use transport::{OnionEndpoint, OnionTransport};
 
 /// Maximum application text length in UTF-8 bytes, not characters.
