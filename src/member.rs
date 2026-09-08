@@ -143,6 +143,7 @@ impl Member {
             &self.credential.credential,
             &self.chat_public_key(),
             self.trust.as_ref().ok_or(Error::Admission)?,
+            self.clock.now()?,
         )
     }
 
@@ -268,7 +269,7 @@ impl Member {
         let group = staged
             .into_group(&working.0)
             .map_err(|_| Error::InvalidState)?;
-        verify_group_history(&group, trust)?;
+        verify_group_history(&group, trust, self.clock.now()?)?;
         Ok(PreparedJoin {
             working,
             group,
@@ -380,7 +381,7 @@ impl Member {
         };
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
         let sender_credential = processed.credential().clone();
-        verify_historical_credential(&sender_credential, &sender.signature_key, trust)?;
+        verify_historical_credential(&sender_credential, &sender.signature_key, trust, now)?;
         let received = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(application) => {
                 let bytes = Zeroizing::new(application.into_bytes());
@@ -450,7 +451,7 @@ impl Member {
                 group
                     .merge_staged_commit(&working.0, *commit)
                     .map_err(|_| Error::InvalidMessage)?;
-                verify_group_history(&group, trust)?;
+                verify_group_history(&group, trust, now)?;
                 Received::MembershipChanged
             }
             _ => return Err(Error::InvalidMessage),
@@ -536,7 +537,7 @@ impl Member {
         group
             .merge_pending_commit(&working.0)
             .map_err(|_| Error::InvalidState)?;
-        verify_group_history(&group, trust)?;
+        verify_group_history(&group, trust, now)?;
         std::mem::swap(&mut self.provider, &mut working.0);
         let old_group = self.group.replace(group);
         let old_credential = std::mem::replace(&mut self.credential, credential);
@@ -694,13 +695,17 @@ fn verify_historical_credential(
     credential: &Credential,
     key: &[u8],
     trust: &AdmissionTrust,
+    now: u64,
 ) -> Result<String, Error> {
     let grant = credential_grant(credential)?;
+    if grant.issued_at > now {
+        return Err(Error::Admission);
+    }
     verify_admission(&grant, trust, key, grant.issued_at)
 }
-fn verify_group_history(group: &MlsGroup, trust: &AdmissionTrust) -> Result<(), Error> {
+fn verify_group_history(group: &MlsGroup, trust: &AdmissionTrust, now: u64) -> Result<(), Error> {
     for member in group.members() {
-        verify_historical_credential(&member.credential, &member.signature_key, trust)?;
+        verify_historical_credential(&member.credential, &member.signature_key, trust, now)?;
     }
     Ok(())
 }
@@ -712,7 +717,7 @@ fn verify_leaf_change(
     trust: &AdmissionTrust,
     now: u64,
 ) -> Result<(), Error> {
-    let old_id = verify_historical_credential(old, old_key, trust)?;
+    let old_id = verify_historical_credential(old, old_key, trust, now)?;
     let new_id = verify_credential(
         leaf.credential(),
         leaf.signature_key().as_slice(),
