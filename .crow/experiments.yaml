@@ -67,3 +67,18 @@ steps:
           timeout 1200 cargo build --locked --example profile_signing
           CMSG_PROFILE_SIGNER="$CARGO_TARGET_DIR/debug/examples/profile_signing" node .dependencies/cfrm/experiments/member-profiles/cmsg-signatures.js
         '
+  - name: capture-formatted-native-source
+    image: bash
+    depends_on: [profile-signature-interoperability]
+    when:
+      - status: [success, failure]
+    commands:
+      - |
+        # Capture only after execution. Formatting artifacts are not tested
+        # source: their changes must be committed and the tests run again.
+        ci_artifact_dir="/workspaces/component-releases/cmsg/$CI_COMMIT_SHA"
+        mkdir -p "$ci_artifact_dir"
+        cargo fmt --all
+        tar --create --file "$ci_artifact_dir/native-formatted-source.tar" src/*.rs tests/*.rs examples/*.rs
+        (cd "$ci_artifact_dir" && sha256sum native-formatted-source.tar > native-formatted-source.tar.sha256)
+        cat "$ci_artifact_dir/native-formatted-source.tar.sha256"
