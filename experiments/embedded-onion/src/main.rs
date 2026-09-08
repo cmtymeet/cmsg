@@ -1,7 +1,8 @@
 //! Explicitly triggered synthetic public-network experiment, never a host daemon.
 use arti_client::{config::TorClientConfigBuilder, TorClient};
 use cmsg_embedded_onion_experiment::{
-    allowed_request, dial_checked, mls_round_trip, Failure, OwnedState, Result, SessionScope,
+    allowed_request, dial_checked, initialize_tls_provider, mls_round_trip, Failure, OwnedState,
+    Result, SessionScope,
 };
 use futures::StreamExt;
 use safelog::DisplayRedacted;
@@ -185,6 +186,11 @@ fn main() {
         emit("configuration", "failed");
         std::process::exit(1);
     }
+    if initialize_tls_provider().is_err() {
+        emit("tls_provider", "failed");
+        std::process::exit(1);
+    }
+    emit("tls_provider", "passed");
     let state = match OwnedState::create(Path::new(&arguments[3])) {
         Ok(state) => state,
         Err(_) => {

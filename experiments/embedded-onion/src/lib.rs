@@ -2,7 +2,7 @@
 use std::{
     future::Future,
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::{
@@ -28,9 +28,14 @@ pub enum Failure {
 pub type Result<T> = std::result::Result<T, Failure>;
 
 /// Configure the process TLS provider before constructing an Arti client.
-/// Pending implementation: the hosted regression must fail first.
+/// This standalone experiment owns initialization; an unrelated prior provider is refused.
 pub fn initialize_tls_provider() -> Result<()> {
-    Err(Failure::Configuration)
+    static INITIALIZED: OnceLock<Result<()>> = OnceLock::new();
+    *INITIALIZED.get_or_init(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .map_err(|_| Failure::Configuration)
+    })
 }
 
 pub struct OwnedState {
