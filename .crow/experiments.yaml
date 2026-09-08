@@ -25,6 +25,19 @@ steps:
       - rustc --version
       - cargo --version
       - |
+        if command -v rustup >/dev/null 2>&1; then
+          rustup toolchain list
+          rustup target list --installed
+        fi
+        for ci_mobile_target in aarch64-linux-android aarch64-apple-ios; do
+          ci_mobile_libdir="$(rustc --print target-libdir --target "$ci_mobile_target")"
+          if test -d "$ci_mobile_libdir"; then
+            printf '%s: target standard library present\n' "$ci_mobile_target"
+          else
+            printf '%s: target standard library unavailable; no mobile check claimed\n' "$ci_mobile_target"
+          fi
+        done
+      - |
         mkdir -p "$CARGO_TARGET_DIR"
         flock "$CARGO_TARGET_DIR.ci.lock" bash -euc '
           ci_test_status=0
