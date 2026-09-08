@@ -42,3 +42,64 @@ fn unadmitted_identity_cannot_create_a_group_or_key_package() {
     assert!(member.create_group().is_err());
     assert!(member.key_package().is_err());
 }
+#[test]
+fn an_identity_certificate_cannot_be_copied_onto_a_different_chat_key() {
+    let a = common::member();
+    let mut b = Member::new().unwrap();
+    let certificate = grant(&a.chat_public_key(), 9);
+    assert!(b.bind_admission(certificate, trust(), 100).is_err());
+    assert!(b.key_package().is_err());
+}
+#[test]
+fn another_communitys_valid_identity_cannot_join_this_group() {
+    let mut a = common::member();
+    a.create_group().unwrap();
+    let mut b = Member::new().unwrap();
+    let mut certificate = grant(&b.chat_public_key(), 9);
+    let mut other_trust = trust();
+    certificate.community_id = "another-community".into();
+    other_trust.community_id = certificate.community_id.clone();
+    sign(&mut certificate);
+    b.bind_admission(certificate, other_trust, 100).unwrap();
+    assert!(a.add(&b.key_package().unwrap()).is_err());
+}
+#[test]
+fn malicious_welcome_does_not_destroy_a_valid_pending_key_package() {
+    use openmls::prelude::*;
+    use openmls_basic_credential::SignatureKeyPair;
+    use openmls_rust_crypto::OpenMlsRustCrypto;
+    use openmls_traits::OpenMlsProvider;
+    use tls_codec::{Deserialize, Serialize};
+    let mut receiver = common::member();
+    let mut valid_inviter = common::member();
+    valid_inviter.create_group().unwrap();
+    let package = receiver.key_package().unwrap();
+    let valid_welcome = valid_inviter.add(&package).unwrap().welcome;
+    let provider = OpenMlsRustCrypto::default();
+    let suite = Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519;
+    let signer = SignatureKeyPair::new(suite.signature_algorithm()).unwrap();
+    let credential = CredentialWithKey {
+        credential: BasicCredential::new(b"self-asserted identity without cvld proof".to_vec())
+            .into(),
+        signature_key: signer.to_public_vec().into(),
+    };
+    let config = MlsGroupCreateConfig::builder()
+        .ciphersuite(suite)
+        .use_ratchet_tree_extension(true)
+        .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+        .build();
+    let mut malicious = MlsGroup::new(&provider, &signer, &config, credential).unwrap();
+    let package = KeyPackageIn::tls_deserialize_exact(&package)
+        .unwrap()
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .unwrap();
+    let (_, wrong_welcome, _) = malicious
+        .add_members(&provider, &signer, &[package])
+        .unwrap();
+    assert!(receiver
+        .join(&wrong_welcome.tls_serialize_detached().unwrap())
+        .is_err());
+    receiver
+        .join(&valid_welcome)
+        .expect("invalid welcome must not consume key-package secrets");
+}

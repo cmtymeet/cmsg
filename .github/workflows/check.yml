@@ -16,8 +16,7 @@ jobs:
       - name: Behavioural tests
         run: |
           cargo fmt --all -- --check
-          cargo test --locked --all-targets
-          cargo test --locked --test scale -- --nocapture
+          cargo test --locked --all-targets -- --nocapture
       - name: Dependency resolution record
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
