@@ -246,9 +246,8 @@ impl PendingRelease {
     }
 
     pub fn seal(&self, key: &[u8; 32]) -> Result<Vec<u8>, Error> {
-        let plaintext = Zeroizing::new(
-            serde_json::to_vec(&self.state).map_err(|_| Error::InvalidStore)?,
-        );
+        let plaintext =
+            Zeroizing::new(serde_json::to_vec(&self.state).map_err(|_| Error::InvalidStore)?);
         if plaintext.len() > MAX_STORE_BYTES - 29 {
             return Err(Error::InvalidStore);
         }
@@ -340,7 +339,10 @@ fn valid_state(state: &State) -> bool {
         && decode::<32>(&state.release_nonce).is_some()
         && decode::<32>(&state.authorization_nonce).is_some()
         && state.release_nonce != state.authorization_nonce
-        && state.request_hash.as_ref().is_none_or(|hash| decode::<32>(hash).is_some())
+        && state
+            .request_hash
+            .as_ref()
+            .is_none_or(|hash| decode::<32>(hash).is_some())
         && state.declined == state.material.is_none()
         && state.material.as_ref().is_none_or(|material| {
             !material.welcome.is_empty()
