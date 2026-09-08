@@ -144,10 +144,9 @@ impl Member {
         {
             return Err(Error::Admission);
         }
-        let envelope = serde_json::to_vec(&serde_json::json!([
-            receipt.message,
-            receipt.signature,
-        ])).map_err(|_| Error::Admission)?;
+        let envelope =
+            serde_json::to_vec(&serde_json::json!([receipt.message, receipt.signature,]))
+                .map_err(|_| Error::Admission)?;
         let mut authorization = DirectionalReceiveAuthorization {
             version: 1,
             purpose: "acknowledged-receive".into(),
@@ -175,8 +174,8 @@ impl Member {
         expires_at: u64,
     ) -> Result<ReleasePreflight, Error> {
         let (own, now) = self.current_release_admission(context)?;
-        let recipient_key = decode::<32>(&recipient_admission.chat_public_key)
-            .ok_or(Error::Admission)?;
+        let recipient_key =
+            decode::<32>(&recipient_admission.chat_public_key).ok_or(Error::Admission)?;
         verify_admission(
             recipient_admission,
             self.trust.as_ref().ok_or(Error::Admission)?,
@@ -184,9 +183,7 @@ impl Member {
             now,
         )?;
         validate_window(now, expires_at, context, &[&own, recipient_admission])?;
-        if own.member_id == recipient_admission.member_id
-            || decode::<32>(release_nonce).is_none()
-        {
+        if own.member_id == recipient_admission.member_id || decode::<32>(release_nonce).is_none() {
             return Err(Error::Admission);
         }
         let mut preflight = ReleasePreflight {
@@ -216,8 +213,7 @@ impl Member {
         sender_admission: &AdmissionGrant,
     ) -> Result<(), Error> {
         let (own, now) = self.current_release_admission(&preflight.context)?;
-        let sender_key = decode::<32>(&sender_admission.chat_public_key)
-            .ok_or(Error::Admission)?;
+        let sender_key = decode::<32>(&sender_admission.chat_public_key).ok_or(Error::Admission)?;
         verify_admission(
             sender_admission,
             self.trust.as_ref().ok_or(Error::Admission)?,
@@ -248,7 +244,10 @@ impl Member {
         let signature = decode::<64>(&preflight.signature).ok_or(Error::Admission)?;
         VerifyingKey::from_bytes(&sender_key)
             .map_err(|_| Error::Admission)?
-            .verify_strict(&preflight_bytes(preflight)?, &Signature::from_bytes(&signature))
+            .verify_strict(
+                &preflight_bytes(preflight)?,
+                &Signature::from_bytes(&signature),
+            )
             .map_err(|_| Error::Admission)
     }
 
@@ -260,8 +259,8 @@ impl Member {
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
         let basic = BasicCredential::try_from(self.credential.credential.clone())
             .map_err(|_| Error::Admission)?;
-        let grant: AdmissionGrant = serde_json::from_slice(basic.identity())
-            .map_err(|_| Error::Admission)?;
+        let grant: AdmissionGrant =
+            serde_json::from_slice(basic.identity()).map_err(|_| Error::Admission)?;
         verify_admission(&grant, trust, &self.chat_public_key(), now)?;
         if context.community_id != trust.community_id
             || context.policy_digest != trust.policy_digest
@@ -328,7 +327,8 @@ fn send_bytes(a: &DirectionalSendAuthorization) -> Result<Vec<u8>, Error> {
         a.nonce,
         a.issued_at,
         a.expires_at,
-    ])).map_err(|_| Error::Admission)
+    ]))
+    .map_err(|_| Error::Admission)
 }
 
 fn receive_bytes(a: &DirectionalReceiveAuthorization) -> Result<Vec<u8>, Error> {
@@ -342,7 +342,8 @@ fn receive_bytes(a: &DirectionalReceiveAuthorization) -> Result<Vec<u8>, Error> 
         a.nonce,
         a.issued_at,
         a.expires_at,
-    ])).map_err(|_| Error::Admission)
+    ]))
+    .map_err(|_| Error::Admission)
 }
 
 fn preflight_bytes(p: &ReleasePreflight) -> Result<Vec<u8>, Error> {
@@ -360,5 +361,6 @@ fn preflight_bytes(p: &ReleasePreflight) -> Result<Vec<u8>, Error> {
         p.release_nonce,
         p.issued_at,
         p.expires_at,
-    ])).map_err(|_| Error::Admission)
+    ]))
+    .map_err(|_| Error::Admission)
 }
