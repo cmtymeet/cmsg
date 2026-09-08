@@ -156,16 +156,24 @@ fn commitments_are_nonzero_canonical_decimal_field_elements() {
         assert!(member.sign_semaphore_enrollment(&c, valid).is_ok());
     }
     for invalid in [
-        "", "0", "01", "+1", "-1", "1.0", "1e2", " 1", "1 ", "١", FIELD_MODULUS,
+        "",
+        "0",
+        "01",
+        "+1",
+        "-1",
+        "1.0",
+        "1e2",
+        " 1",
+        "1 ",
+        "١",
+        FIELD_MODULUS,
     ] {
         c.commitment = invalid.into();
         assert!(member.sign_semaphore_enrollment(&c, invalid).is_err());
     }
     let oversized = "9".repeat(79);
     c.commitment = oversized.clone();
-    assert!(member
-        .sign_semaphore_enrollment(&c, &oversized)
-        .is_err());
+    assert!(member.sign_semaphore_enrollment(&c, &oversized).is_err());
 }
 
 #[test]
