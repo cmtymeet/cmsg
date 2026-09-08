@@ -19,7 +19,7 @@ steps:
           (cd "$ci_source_dir" && sha256sum --check "$ci_source_commit.tar.sha256")
           test "$(git get-tar-commit-id < "$ci_source_archive")" = "$ci_source_commit"
           mkdir "$ci_component"
-          tar --extract --file "$ci_source_archive" --directory "$ci_component" --no-same-owner
+          tar --extract --touch --file "$ci_source_archive" --directory "$ci_component" --no-same-owner
         done
   - name: gated-component-composition
     image: bash

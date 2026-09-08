@@ -13,7 +13,8 @@ steps:
         ci_source_archive="$ci_source_dir/$CI_COMMIT_SHA.tar"
         (cd "$ci_source_dir" && sha256sum --check "$CI_COMMIT_SHA.tar.sha256")
         test "$(git get-tar-commit-id < "$ci_source_archive")" = "$CI_COMMIT_SHA"
-        tar --extract --file "$ci_source_archive" --no-same-owner
+        # Fresh mtimes prevent older staged revisions appearing fresh in Cargo's cache.
+        tar --extract --touch --file "$ci_source_archive" --no-same-owner
   - name: native-behavioral-tests
     image: bash
     depends_on: [verified-source-checkout]
