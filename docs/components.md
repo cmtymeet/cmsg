@@ -1,4 +1,8 @@
-# Proposed component boundaries
+# Community components
+
+Any community can compose these three repositories. They are general-purpose infrastructure for communities whose members need privacy, including sensitive personal or health discussions. A community supplies its own participation policy and presentation above the shared components.
+
+Membership is sensitive data. Community identities and rule histories must not be automatically joined across communities. Reusing eligibility infrastructure does not authorize a global member directory or a shared cross-community tracking identifier.
 
 | Component | Responsibility | State boundary |
 |---|---|---|
