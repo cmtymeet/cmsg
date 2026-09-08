@@ -356,3 +356,43 @@ fn even_current_sender_cannot_replace_its_stable_identity_during_self_update() {
         Received::MembershipChanged
     ));
 }
+
+#[test]
+fn future_dated_roster_entry_is_not_history_and_cannot_consume_a_legitimate_welcome() {
+    use openmls::prelude::{KeyPackageIn, ProtocolVersion};
+    use openmls_traits::OpenMlsProvider;
+    use tls_codec::{Deserialize, Serialize};
+    let clock = ManualClock::new(100);
+    let mut existing = member(&clock, 230, 1000);
+    let mut owner = RawOwner::with_receiver(&mut existing);
+    let mut target = member(&clock, 231, 1000);
+    let target_package = target.key_package().unwrap();
+    let mut legitimate = member(&clock, 232, 1000);
+    legitimate.create_group().unwrap();
+    let valid_welcome = legitimate.add(&target_package).unwrap().welcome;
+
+    let future_clock = ManualClock::new(200);
+    let mut future = Member::new_with_clock(future_clock).unwrap();
+    future
+        .bind_admission(grant(&future, 233, 150, 1000), common::trust(), 200)
+        .unwrap();
+    let packages: Vec<_> = [future.key_package().unwrap(), target_package]
+        .iter()
+        .map(|bytes| {
+            KeyPackageIn::tls_deserialize_exact(bytes)
+                .unwrap()
+                .validate(owner.provider.crypto(), ProtocolVersion::Mls10)
+                .unwrap()
+        })
+        .collect();
+    let (_, welcome, _) = owner
+        .group
+        .add_members(&owner.provider, &owner.signer, &packages)
+        .unwrap();
+    assert!(target
+        .join(&welcome.tls_serialize_detached().unwrap())
+        .is_err());
+    target
+        .join(&valid_welcome)
+        .expect("future roster rejection must preserve pending key-package state");
+}
