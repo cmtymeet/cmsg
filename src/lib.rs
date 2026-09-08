@@ -3,9 +3,11 @@
 //! This crate is a cryptographic/transport component, not admission enforcement.
 //! Applications must verify cvld eligibility and cfrm capabilities before invoking
 //! it. No public API claims those independent proofs have been checked.
+mod admission;
 mod member;
 mod transport;
 
+pub use admission::{AdmissionGrant, AdmissionTrust, verify_admission};
 pub use member::{Invitation, Member, Received};
 pub use transport::{OnionEndpoint, OnionTransport};
 
@@ -18,6 +20,7 @@ pub const MAX_WIRE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     InvalidText,
+    Admission,
     InvalidMessage,
     InvalidState,
     InvalidStore,
