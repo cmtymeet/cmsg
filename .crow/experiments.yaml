@@ -19,7 +19,30 @@ steps:
     depends_on: [verified-source-checkout]
     environment:
       CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: /caches/cargo/component-targets/cmsg
     commands:
       - rustc --version
       - cargo --version
-      - timeout 1200 cargo test --locked --all-targets --no-fail-fast -- --nocapture
+      - |
+        ci_test_status=0
+        cargo fmt --all -- --check || ci_test_status=1
+        timeout 1200 cargo test --locked --all-targets --no-fail-fast -- --nocapture || ci_test_status=1
+        exit "$ci_test_status"
+  - name: profile-signature-interoperability
+    image: bash
+    depends_on: [native-behavioral-tests]
+    when:
+      - status: [success, failure]
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: /caches/cargo/component-targets/cmsg
+    commands:
+      - |
+        ci_cfrm_commit=080cf7435acf8c23c2caa9a5bd50c7d5ae6a14a5
+        ci_cfrm_dir="/workspaces/component-sources/cfrm"
+        (cd "$ci_cfrm_dir" && sha256sum --check "$ci_cfrm_commit.tar.sha256")
+        test "$(git get-tar-commit-id < "$ci_cfrm_dir/$ci_cfrm_commit.tar")" = "$ci_cfrm_commit"
+        mkdir -p .dependencies/cfrm
+        tar --extract --file "$ci_cfrm_dir/$ci_cfrm_commit.tar" --directory .dependencies/cfrm --no-same-owner
+      - timeout 1200 cargo build --locked --example profile_signing
+      - CMSG_PROFILE_SIGNER="$CARGO_TARGET_DIR/debug/examples/profile_signing" node .dependencies/cfrm/experiments/member-profiles/cmsg-signatures.js
