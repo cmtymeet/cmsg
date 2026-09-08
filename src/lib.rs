@@ -11,7 +11,7 @@ mod transport;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
 pub use member::{Invitation, Member, Received, TextMessage};
-pub use rendezvous::RendezvousChallenge;
+pub use rendezvous::{RendezvousChallenge, RendezvousEndpoint};
 pub use transport::{OnionEndpoint, OnionTransport};
 
 /// Maximum application text length in UTF-8 bytes, not characters.
