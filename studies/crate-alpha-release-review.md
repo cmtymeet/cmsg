@@ -1,6 +1,6 @@
 # Crate alpha release review
 
-The candidate is `cmsg 0.1.0-alpha.1`, a reusable Rust integration library rather than a deployable messenger. Publication remains disabled while the exact archive and its external consumer are checked. FSL-1.1-ALv2 covers this repository's code; dependencies retain their upstream licenses.
+The candidate is `cmsg 0.1.0-alpha.1`, a reusable Rust integration library rather than a deployable messenger. The manifest permits publication only to crates.io; packaging and this review do not upload it. The exact archive and its external consumer must pass before maintainer review and publication. FSL-1.1-ALv2 covers this repository's code; dependencies retain their upstream licenses.
 
 ## Useful public API
 
@@ -17,6 +17,8 @@ The candidate is `cmsg 0.1.0-alpha.1`, a reusable Rust integration library rathe
 | `validate_text`, `MAX_TEXT_BYTES`, `MAX_WIRE_BYTES`, `Error` | Literal UTF-8 framing, bounded input and coarse error categories | Render text literally and avoid attachments, previews, URL fetching or logging private data |
 
 `Member::renew_admission` provides the candidate member plus the exact outbound control bytes to its persistence callback. The host can atomically encrypt and save both the snapshot and its private outbox before success. This does not guarantee delivery or snapshot freshness. Low-level add/remove/send/receive remain host-managed transactional integration boundaries; this release does not add a general durable messaging engine. The legacy `remove(u32)` primitive uses an epoch-relative leaf index; clients should use `participants` and `remove_participant` for user-selected targets.
+
+A callback error or panic rolls back in-memory state but cannot undo a host write that became durable before an ambiguous error. After a possibly durable write reports failure, the host must recover its canonical encrypted checkpoint/outbox before further sends. Continuing from the older in-memory copy can fork the sender state. The same host uncertainty applies to Inbox checkpoints; a callback cannot establish monotonic persistence by returning a boolean alone.
 
 `Inbox` persistence/redemption closures are synchronous Rust interfaces. A host must supply the appropriate worker/runtime boundary for network and disk work; these are not already Swift/Kotlin asynchronous APIs. The public `Error` is a coarse enum, not yet a `std::error::Error` implementation. No private signing-key export, plaintext serialization of `Member`, operator content callback or report API is exported.
 
