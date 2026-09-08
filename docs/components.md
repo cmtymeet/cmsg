@@ -1,8 +1,8 @@
 # Community components
 
-Any community can compose these three repositories. They are general-purpose infrastructure for communities whose members need privacy, including sensitive personal or health discussions. A community supplies its own participation policy and presentation above the shared components.
+Any community can compose these three repositories. They are general-purpose reusable software components. A community supplies its own participation policy and presentation above the shared components.
 
-Membership is sensitive data. Community identities and rule histories must not be automatically joined across communities. Reusing eligibility infrastructure does not authorize a global member directory or a shared cross-community tracking identifier.
+A member has one authenticated pseudonymous identity that visibly persists from the forum into their chats within a deployment. That identity is intentionally visible to counterparts; private conversation relationships are not disclosed to operator accounting. Community identities and rule histories must not be automatically joined across deployments. Reusing eligibility infrastructure does not authorize a global member directory or a shared cross-community tracking identifier.
 
 | Component | Responsibility | State boundary |
 |---|---|---|

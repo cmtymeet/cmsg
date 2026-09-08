@@ -2,7 +2,7 @@
 
 ## Required behavior
 
-Messages are end-to-end encrypted between two or more participants. The application payload is bounded UTF-8 text. There are no attachments, pictures, video, embedded HTML, automatic link previews or remote assets. Text can encode arbitrary information; the protocol cannot prove that plaintext is semantically human prose.
+Messages are end-to-end encrypted between two or more participants. Groups must support at least 100 participants with configurable practical limits. Each participant can authenticate the same stable pseudonymous identity shown in the forum; a self-asserted display name is insufficient. The application payload is bounded UTF-8 text. There are no attachments, pictures, video, embedded HTML, automatic link previews or remote assets. Text can encode arbitrary information; the protocol cannot prove that plaintext is semantically human prose.
 
 The operator holds no content keys or plaintext message store. Local history and private credentials are encrypted. Passkey-based local key wrapping is a candidate; the passkey signing key is not itself a database encryption key. Device recovery and PRF support need validation.
 
@@ -17,6 +17,10 @@ All relevant connections require a validated anonymity transport. There is no si
 Peers hold and exchange application state, but direct network sockets between them are not required. Anonymity relays may carry encrypted traffic. Exact queue lifetime and offline private-message behavior remain open; online-only profile discovery does not settle offline message delivery.
 
 No design can prevent a recipient from copying deliberately shared content or identify every correlation attack. Resistance to a global timing observer is a separate threat-model question, not an automatic consequence of encryption or Tor.
+
+## Portability
+
+The library must support future native Android and iOS applications. Server runtimes need not run on the device. Mobile compatibility requires executable build/integration evidence for cryptographic bindings, protected local keys and anonymous transport; desktop success alone is insufficient. App suspension and reconnection must preserve identity and cryptographic state without a direct-network fallback.
 
 ## Accounting and telemetry
 
