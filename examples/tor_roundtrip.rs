@@ -1,7 +1,7 @@
 #[path = "../tests/common/mod.rs"]
 mod synthetic;
 // Synthetic live Tor onion experiment; never run a hosted client with real keys.
-use cmsg::{Member, OnionEndpoint, OnionTransport, Received};
+use cmsg::{OnionEndpoint, OnionTransport, Received};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,

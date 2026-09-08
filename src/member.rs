@@ -224,12 +224,26 @@ impl Member {
             MlsMessageBodyIn::Welcome(welcome) => welcome,
             _ => return Err(Error::InvalidMessage),
         };
+        let mut working = WorkingProvider(OpenMlsRustCrypto::default());
+        *working
+            .0
+            .storage()
+            .values
+            .write()
+            .map_err(|_| Error::InvalidState)? = self
+            .provider
+            .storage()
+            .values
+            .read()
+            .map_err(|_| Error::InvalidState)?
+            .clone();
         let group =
-            StagedWelcome::new_from_welcome(&self.provider, config().join_config(), welcome, None)
+            StagedWelcome::new_from_welcome(&working.0, config().join_config(), welcome, None)
                 .map_err(|_| Error::InvalidMessage)?
-                .into_group(&self.provider)
+                .into_group(&working.0)
                 .map_err(|_| Error::InvalidState)?;
         verify_group(&group, self.trust.as_ref().ok_or(Error::Admission)?)?;
+        std::mem::swap(&mut self.provider, &mut working.0);
         self.group = Some(group);
         Ok(())
     }

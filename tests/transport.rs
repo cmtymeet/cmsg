@@ -1,5 +1,5 @@
 mod common;
-use cmsg::{Member, OnionEndpoint, OnionTransport, Received};
+use cmsg::{OnionEndpoint, OnionTransport, Received};
 use sha3::{Digest, Sha3_256};
 use std::time::Duration;
 use tokio::{
