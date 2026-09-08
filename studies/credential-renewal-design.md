@@ -1,6 +1,6 @@
 # Credential renewal: review findings and proposed checks
 
-This is a design proposal from source review, not implemented behavior or passing test evidence. The existing cvld admission verifier remains strict. The newer recipient Inbox also still awaits hosted execution as recorded in [the implementation study](implementation-experiments.md).
+This records the source-review findings and intended renewal behavior. Implementation `7e2d407` now awaits successful runtime validation; it is not yet passing evidence. The cvld admission verifier remains strict. Runtime status is recorded in [the implementation study](implementation-experiments.md).
 
 ## Observed behavior
 
@@ -50,7 +50,7 @@ In particular, a long offline backlog may contain control messages whose senders
 
 ## Prepared API specifications
 
-`26add9a` adds seven fail-first lifecycle tests and explicit stubs. They have not executed at the time of this study update. The proposed API is `Clock::now()`, `Member::new_with_clock`, `Member::restore_with_clock`, `Member::renew_admission` and `Member::receive_control`. Existing constructors keep their system-clock behavior. The injected clock is trusted caller-owned process state and is not serialized into a snapshot.
+`26add9a` adds seven fail-first lifecycle tests and explicit stubs. All seven compiled and failed at the clock constructor in Crow repository 10, pipeline 1, running public commit `10f20212c93dc18deaf4819504b7c0af705542b8`. Implementation `7e2d407` follows that red evidence and awaits its own successful run. The API is `Clock::now()`, `Member::new_with_clock`, `Member::restore_with_clock`, `Member::renew_admission` and `Member::receive_control`. Existing constructors keep their system-clock behavior. The injected clock is trusted caller-owned process state and is not serialized into a snapshot.
 
 `renew_admission` targets an already joined group and returns its MLS commit only after a caller-supplied durable persistence callback succeeds on the candidate member. The callback can encrypt a snapshot using its existing cvld-derived wrapping material. Both a returned persistence error and a panic must restore the original in-memory certificate and ratchet. `receive_control` returns no application text. Neither new method bypasses Inbox for a new invitation.
 

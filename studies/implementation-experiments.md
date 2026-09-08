@@ -30,7 +30,7 @@ The mocked SOCKS tests are socket-level negative tests, not proof of Tor anonymi
 
 The isolated experiment succeeded in [run 34258388661](https://github.com/corbet-labs/cmsg/actions/runs/34258388661): nine real Tor processes bootstrapped in 77 seconds, carried an actual MLS ciphertext through the onion service, and returned `onion_round_trip`, `plaintext_equal` and `recipient_saw_only_local_tor` as true. This is evidence for the real protocol integration on that test network; the public-network and independent-device limits above still apply.
 
-All builds and tests run on standard public GitHub-hosted runners with public source and synthetic data. No production secret or protected input is sent to CI. Dependency resolution is locked. The normal workflow additionally checks Android arm64 and iOS arm64 Rust targets without signing or paid accounts.
+The initial builds and tests ran on standard public GitHub-hosted runners with public source and synthetic data. After GitHub stopped launching runs, the existing Crow worker supplied a fallback using immutable archives of the exact public commits, checked before execution. No production secret or protected input is sent to either test environment, and the fallback required no paid service or new tool installation. Dependency resolution is locked. The GitHub workflow additionally checks Android arm64 and iOS arm64 Rust targets without signing or paid accounts; native Crow execution alone does not repeat those cross-target checks.
 
 ## Measured baseline
 
@@ -59,7 +59,11 @@ The persistence callback must mean an atomic, durable local write. It cannot est
 
 Recipient-controlled cancellation and stable-ID invitation blocking have published fail-first specifications. Cancellation clears the local pending attempt without a refund or an operator request. Blocking is private and community scoped, including known inviters; existing conversation display still needs to honor that local state separately from raw `Member::receive`. Local history and cancellation should remain accessible after admission expiry, while accepting a new invitation still requires current admission.
 
-Verification is incomplete for this newer boundary. The initial six Inbox specifications compiled and failed against explicit stubs at `3f90beb`, [run 34259403726](https://github.com/corbet-labs/cmsg/actions/runs/34259403726). Subsequent implementation, transactional persistence changes, the gated composition example and additional cancellation/blocking specifications have not completed a hosted build. As observed on 2026-09-08, new pushes produced no Actions runs and workflow dispatch returned HTTP 500 across the component repositories. No local build was substituted and no green result is claimed for those changes.
+The initial six Inbox specifications compiled and failed against explicit stubs at `3f90beb`, [run 34259403726](https://github.com/corbet-labs/cmsg/actions/runs/34259403726). As observed on 2026-09-08, later pushes produced no Actions runs and workflow dispatch returned HTTP 500 across the component repositories.
+
+The Crow fallback then executed the exact public source `10f20212c93dc18deaf4819504b7c0af705542b8` (repository 10, pipeline 1; Rust 1.97.1, two build jobs). All 23 baseline tests passed. Ten of 13 Inbox specifications passed; cancellation, blocking and the 128-byte context regression failed before their fixes. The profile signing positive failed against its explicit stub, and all seven lifecycle specifications failed at the clock-constructor stub. Passing negative tests against a rejecting stub are not evidence for an implemented security boundary. All examples compiled. This is real behavioral red evidence, not an overall green run.
+
+`05522b5` implements the remaining Inbox controls and fixed-purpose profile signatures. `7e2d407` implements the clocked renewal and control-only recovery described in [the lifecycle study](credential-renewal-design.md). Both await successful execution at the time of this update. No desktop or laptop build was substituted.
 
 ## Remaining integration and security work
 
