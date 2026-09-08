@@ -238,12 +238,24 @@ fn trusted_clock_controls_signature_timestamps_expiry_and_current_admission() {
     recipient.verify_release_preflight(&p, &s_grant).unwrap();
     r_clock.0.store(150, Ordering::SeqCst);
     assert!(recipient.verify_release_preflight(&p, &s_grant).is_err());
+    // Keep every other time boundary current to isolate the expired own grant.
+    let expired = s_grant.expires_at;
+    let late_context = ReleaseContext {
+        not_before: expired - 10,
+        expires_at: expired + 100,
+        ..context()
+    };
+    let late_timing = ReleaseAuthorizationTiming { expires_at: expired + 50, ..timing() };
+    let mut renewed_recipient = r_grant.clone();
+    renewed_recipient.issued_at = expired - 10;
+    renewed_recipient.expires_at = expired + 100;
+    common::sign(&mut renewed_recipient);
     s_clock.0.store(s_grant.expires_at, Ordering::SeqCst);
-    assert!(sender.authorize_release_send(&context(), &[33; 384], &timing()).is_err());
-    assert!(sender.sign_release_preflight(&context(), &r_grant, &B64.encode(&[41; 32]), 150).is_err());
+    assert!(sender.authorize_release_send(&late_context, &[33; 384], &late_timing).is_err());
+    assert!(sender.sign_release_preflight(&late_context, &renewed_recipient, &B64.encode(&[41; 32]), expired + 50).is_err());
     r_clock.0.store(r_grant.expires_at, Ordering::SeqCst);
     let nonce = B64.encode(&[41; 32]);
-    assert!(recipient.authorize_release_receive(&context(), &receipt(&r_grant, &nonce), &nonce, &timing()).is_err());
+    assert!(recipient.authorize_release_receive(&late_context, &receipt(&r_grant, &nonce), &nonce, &late_timing).is_err());
 }
 
 #[test]
