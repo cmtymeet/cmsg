@@ -16,6 +16,7 @@ mod inbox;
 mod lifecycle;
 mod member;
 mod profile;
+mod release;
 mod rendezvous;
 mod roster;
 mod transport;
@@ -27,6 +28,10 @@ pub use inbox::{Acceptance, Inbox, Redemption};
 pub use lifecycle::Clock;
 pub use member::{Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;
+pub use release::{
+    DirectionalReceiveAuthorization, DirectionalSendAuthorization, ReleaseAuthorizationTiming,
+    ReleaseContext, ReleasePeer, ReleasePreflight, ReleaseReceipt,
+};
 pub use rendezvous::{RendezvousChallenge, RendezvousEndpoint};
 pub use roster::{Participant, ParticipantHandle};
 pub use transport::{OnionEndpoint, OnionTransport};
