@@ -119,7 +119,10 @@ impl Member {
 
     pub fn join(&mut self, welcome: &[u8]) -> Result<(), Error> {
         if self.group.is_some() { return Err(Error::InvalidState); }
-        let welcome = parse(welcome)?.into_welcome().ok_or(Error::InvalidMessage)?;
+        let welcome = match parse(welcome)?.extract() {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => return Err(Error::InvalidMessage),
+        };
         self.group = Some(StagedWelcome::new_from_welcome(
             &self.provider, config().join_config(), welcome, None,
         ).map_err(|_| Error::InvalidMessage)?
