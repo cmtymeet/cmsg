@@ -6,7 +6,8 @@ use cmsg::{
     SemaphoreEnrollmentChallenge,
 };
 use cmsg_first_contact_release_experiment::{
-    Context, OperatorTrust, Peer, PendingRelease, RecipientRedemption, ReleasedMaterial, SenderCommit,
+    Context, OperatorTrust, Peer, PendingRelease, RecipientRedemption, ReleasedMaterial,
+    SenderCommit,
 };
 use data_encoding::BASE64URL_NOPAD as B64;
 use ed25519_dalek::VerifyingKey;
@@ -291,21 +292,46 @@ impl Harness {
         let recipient = peer(&actors.recipient)?;
         let mut wrapping_key = Zeroizing::new([0; 32]);
         getrandom::fill(&mut *wrapping_key).map_err(|_| "release-rejected")?;
-        actors.sender.create_group().map_err(|_| "release-rejected")?;
-        let package = actors.recipient.key_package().map_err(|_| "release-rejected")?;
-        let invite = actors.sender.add(&package).map_err(|_| "release-rejected")?;
+        actors
+            .sender
+            .create_group()
+            .map_err(|_| "release-rejected")?;
+        let package = actors
+            .recipient
+            .key_package()
+            .map_err(|_| "release-rejected")?;
+        let invite = actors
+            .sender
+            .add(&package)
+            .map_err(|_| "release-rejected")?;
         let original = ReleasedMaterial {
             welcome: invite.welcome,
-            first_ciphertext: actors.sender.send(FIRST_TEXT.as_bytes()).map_err(|_| "release-rejected")?,
+            first_ciphertext: actors
+                .sender
+                .send(FIRST_TEXT.as_bytes())
+                .map_err(|_| "release-rejected")?,
         };
         let pending = PendingRelease::prepare(
-            pending_context(c), sender, recipient, original.clone(), actors.now,
-        ).map_err(|_| "release-rejected")?;
+            pending_context(c),
+            sender,
+            recipient,
+            original.clone(),
+            actors.now,
+        )
+        .map_err(|_| "release-rejected")?;
         let metadata = pending.preflight();
-        let preflight = actors.sender.sign_release_preflight(
-            c, &admissions.recipient, &metadata.release_nonce, args.preflight_expires_at,
-        ).map_err(|_| "release-rejected")?;
-        actors.recipient.verify_release_preflight(&preflight, &admissions.sender)
+        let preflight = actors
+            .sender
+            .sign_release_preflight(
+                c,
+                &admissions.recipient,
+                &metadata.release_nonce,
+                args.preflight_expires_at,
+            )
+            .map_err(|_| "release-rejected")?;
+        actors
+            .recipient
+            .verify_release_preflight(&preflight, &admissions.sender)
             .map_err(|_| "release-rejected")?;
         // The harness chooses acceptance of this authenticated synthetic invite.
         // It has no production consent/block workflow. Even exposing ciphertext
@@ -322,7 +348,11 @@ impl Harness {
             "ciphertextRejectedBeforeWelcome": true
         });
         actors.release = Some(ReleaseSession {
-            pending, preflight, original, wrapping_key, delivered: false,
+            pending,
+            preflight,
+            original,
+            wrapping_key,
+            delivered: false,
         });
         Ok(response)
     }
@@ -334,16 +364,28 @@ impl Harness {
         if args.expires_at <= actors.now || args.expires_at > session.preflight.expires_at {
             return Err("release-rejected");
         }
-        let blinded = B64.decode(args.blinded.as_bytes()).map_err(|_| "release-rejected")?;
+        let blinded = B64
+            .decode(args.blinded.as_bytes())
+            .map_err(|_| "release-rejected")?;
         if blinded.len() != 384 || B64.encode(&blinded) != args.blinded {
             return Err("release-rejected");
         }
         let request_hash = B64.encode(&Sha256::digest(&blinded));
-        let expected = session.pending.bind_request(&request_hash).map_err(|_| "release-rejected")?;
-        let authorization = actors.sender.authorize_release_send(
-            &session.preflight.context, &blinded,
-            &ReleaseAuthorizationTiming { nonce: expected.authorization_nonce, expires_at: args.expires_at },
-        ).map_err(|_| "release-rejected")?;
+        let expected = session
+            .pending
+            .bind_request(&request_hash)
+            .map_err(|_| "release-rejected")?;
+        let authorization = actors
+            .sender
+            .authorize_release_send(
+                &session.preflight.context,
+                &blinded,
+                &ReleaseAuthorizationTiming {
+                    nonce: expected.authorization_nonce,
+                    expires_at: args.expires_at,
+                },
+            )
+            .map_err(|_| "release-rejected")?;
         // The private preflight/challenge is never added to this operator output.
         Ok(json!({"authorization": authorization}))
     }
@@ -357,10 +399,18 @@ impl Harness {
         }
         let mut nonce = [0; 32];
         getrandom::fill(&mut nonce).map_err(|_| "release-rejected")?;
-        let authorization = actors.recipient.authorize_release_receive(
-            &session.preflight.context, &args.receipt, &session.preflight.release_nonce,
-            &ReleaseAuthorizationTiming { nonce: B64.encode(&nonce), expires_at: args.expires_at },
-        ).map_err(|_| "release-rejected")?;
+        let authorization = actors
+            .recipient
+            .authorize_release_receive(
+                &session.preflight.context,
+                &args.receipt,
+                &session.preflight.release_nonce,
+                &ReleaseAuthorizationTiming {
+                    nonce: B64.encode(&nonce),
+                    expires_at: args.expires_at,
+                },
+            )
+            .map_err(|_| "release-rejected")?;
         Ok(json!({"authorization": authorization}))
     }
 
@@ -370,17 +420,31 @@ impl Harness {
         // operator attestation expiry. Verify current credentials again here.
         verify_private_preflight(actors)?;
         let session = actors.release.as_mut().ok_or("invalid-state")?;
-        let material = session.pending.release(
-            &args.sender_commit, &args.recipient_redemption, &actors.operator_trust, actors.now,
-        ).map_err(|_| "release-rejected")?;
+        let material = session
+            .pending
+            .release(
+                &args.sender_commit,
+                &args.recipient_redemption,
+                &actors.operator_trust,
+                actors.now,
+            )
+            .map_err(|_| "release-rejected")?;
         if material != session.original {
             return Err("release-rejected");
         }
         if !session.delivered {
-            actors.recipient.join(&material.welcome).map_err(|_| "release-rejected")?;
-            match actors.recipient.receive(&material.first_ciphertext).map_err(|_| "release-rejected")? {
+            actors
+                .recipient
+                .join(&material.welcome)
+                .map_err(|_| "release-rejected")?;
+            match actors
+                .recipient
+                .receive(&material.first_ciphertext)
+                .map_err(|_| "release-rejected")?
+            {
                 Received::Text(text)
-                    if text.member_id == session.preflight.sender.member_id && text.text == FIRST_TEXT => {}
+                    if text.member_id == session.preflight.sender.member_id
+                        && text.text == FIRST_TEXT => {}
                 _ => return Err("release-rejected"),
             }
             session.delivered = true;
@@ -400,10 +464,16 @@ impl Harness {
         if session.delivered || actors.recipient.participants().is_ok() {
             return Err("invalid-state");
         }
-        let sealed = session.pending.seal(&session.wrapping_key).map_err(|_| "release-rejected")?;
+        let sealed = session
+            .pending
+            .seal(&session.wrapping_key)
+            .map_err(|_| "release-rejected")?;
         let restored = PendingRelease::restore(
-            &sealed, &session.wrapping_key, &pending_context(&session.preflight.context),
-        ).map_err(|_| "release-rejected")?;
+            &sealed,
+            &session.wrapping_key,
+            &pending_context(&session.preflight.context),
+        )
+        .map_err(|_| "release-rejected")?;
         let metadata = restored.preflight();
         if metadata.release_nonce != session.preflight.release_nonce
             || metadata.sender.member_id != session.preflight.sender.member_id
@@ -423,14 +493,19 @@ impl Harness {
 fn verify_private_preflight(actors: &Actors) -> Result<()> {
     let admissions = actors.admissions.as_ref().ok_or("invalid-state")?;
     let session = actors.release.as_ref().ok_or("invalid-state")?;
-    actors.recipient.verify_release_preflight(&session.preflight, &admissions.sender)
+    actors
+        .recipient
+        .verify_release_preflight(&session.preflight, &admissions.sender)
         .map_err(|_| "release-rejected")
 }
 
 fn pending_context(value: &ReleaseContext) -> Context {
     Context {
-        community_id: value.community_id.clone(), policy_digest: value.policy_digest.clone(),
-        cohort_id: value.cohort_id.clone(), not_before: value.not_before, expires_at: value.expires_at,
+        community_id: value.community_id.clone(),
+        policy_digest: value.policy_digest.clone(),
+        cohort_id: value.cohort_id.clone(),
+        not_before: value.not_before,
+        expires_at: value.expires_at,
     }
 }
 
