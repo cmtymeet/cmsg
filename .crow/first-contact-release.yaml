@@ -38,6 +38,6 @@ steps:
         cargo fmt --manifest-path experiments/first-contact-release/Cargo.toml --package cmsg-first-contact-release-experiment
         ci_artifact_dir="/workspaces/component-releases/cmsg/$CI_COMMIT_SHA"
         mkdir -p "$ci_artifact_dir"
-        tar --create --file "$ci_artifact_dir/first-contact-release-formatted.tar" --directory experiments/first-contact-release src/lib.rs tests/contracts.rs
+        tar --create --file "$ci_artifact_dir/first-contact-release-formatted.tar" --directory experiments/first-contact-release src/lib.rs src/bin/counter_bridge.rs tests/contracts.rs
         (cd "$ci_artifact_dir" && sha256sum first-contact-release-formatted.tar > first-contact-release-formatted.tar.sha256)
         cat "$ci_artifact_dir/first-contact-release-formatted.tar.sha256"
