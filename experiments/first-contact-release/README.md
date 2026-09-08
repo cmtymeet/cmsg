@@ -8,7 +8,7 @@ The owned pending state holds the exact withheld Welcome/ciphertext, current con
 
 `bind_request` returns the expected operator-commit fields with an empty signature for the synthetic fixture. It is not a client debit authorization or an operator request. Operator keys and the supplied time remain trusted host inputs. Restoring an older authentic snapshot can resurrect an earlier local decline; the immutable payload still confines successful release retries to the original bytes.
 
-Canonical JSON array domains are `cfrm.directional.commit.v1` and `cfrm.directional.redemption.v1`, with separate trusted operator keys. They differ from the current cfrm `authorize.v1`/`redeem.v1` client authorization domains. The sender statement contains only its account binding, authorization nonce and blinded request hash; the receiver statement contains only its account binding and private release nonce. Both include community, policy, cohort and validity. The private release nonce must be inside a future blinded receipt and absent from sender-side operator traffic, including hashes or copied preflight fields. Current cfrm receipt bytes do not contain it; [future integration](https://github.com/corbet-labs/cfrm/blob/main/studies/directional-blind-receipts.md) must add and test that seam explicitly. The two signatures do not prove same-token provenance, and schema checks do not establish anonymity.
+Canonical JSON array domains are `cfrm.directional.commit.v1` and `cfrm.directional.redemption.v1`, with separate trusted operator keys. They differ from the current cfrm `authorize.v1`/`redeem.v1` client authorization domains. The sender statement contains only its account binding, authorization nonce and blinded request hash; the receiver statement contains only its account binding and private release nonce. Both include community, policy, cohort and validity. The private release nonce must be inside the blinded receipt and absent from sender-side operator traffic, including hashes or copied preflight fields. The separately tested cfrm [release-purpose receipt](https://github.com/corbet-labs/cfrm/blob/main/experiments/directional-receipts/ATTESTATION-ACCEPTANCE.md) now includes this nonce; its ledger outputs are not yet connected to this client gate. The two signatures do not prove same-token provenance, and schema checks do not establish anonymity.
 
 Specs cover withheld MLS input, exact retry recovery, separate sender commit, signed substitutions, key/domain/signature rejection, different pending invitations, time bounds, local decline without an operator call, encrypted restore and tampering, ordinary free replies and dishonest withholding after an apparent debit. A real 100-member group case additionally demonstrates that forwarding its shared multi-recipient Welcome can bypass another recipient's gate. This is an accepted cooperating-member limitation, not exclusion from a group that already shares keys.
 
@@ -21,3 +21,17 @@ cargo test --locked --manifest-path experiments/first-contact-release/Cargo.toml
 ```
 
 No local compilation or package publication is needed. All compilation and behavioral execution use the existing remote worker.
+
+## Actual-key process composition: rejecting boundary
+
+The new unpublished `counter_bridge` binary follows the reviewed [process outline](https://github.com/corbet-labs/cfrm/blob/main/experiments/directional-receipts/COMPOSITION-OUTLINE.md). It owns two actual `Member` keys, pins the synthetic issuer/operator trust and both independently supplied wallet commitments at initialization, verifies their admission grants, and returns narrow enrollment signatures. A Node driver supplies the separate holder-wallet possession signatures and enrolls those two exact chat keys plus fifteen fixture identities. Neither chat private key leaves the native child.
+
+`prepareRelease` deliberately returns `not-implemented`. The new composition tests must reach this rejection after actual enrollment before the release flow is implemented. The previously passing fifteen isolated contracts and 83 core contracts are separate evidence; no successful cross-process accounting/release composition is claimed yet.
+
+The JSON-lines protocol uses exact increasing request IDs starting at one, a 32 KiB line cap, typed argument schemas and coarse errors. Stdout is captured by the driver, never a public API or diagnostic log. One child holding both peers and one Node driver spanning synthetic holder/operator roles establish no process isolation, anonymity, production provider or mobile behavior. The eventual release path must keep MLS material, plaintext, snapshots and wrapping keys inside the child.
+
+Build the reviewed source on the existing worker and supply the resulting executable through the driver's trusted `CMSG_RELEASE_HARNESS` path:
+
+```
+cargo build --locked --manifest-path experiments/first-contact-release/Cargo.toml --bin counter_bridge
+```
