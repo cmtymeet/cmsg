@@ -8,6 +8,8 @@ The worker generated the separate 600-package lock in [pipeline 16](https://crow
 
 The planned TLS correction uses Rustls's existing `ring` backend with an explicit process default before Arti initialization. [Rustls documents early application-level provider selection](https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html). The checked [Rustls 0.23.44 archive](https://crates.io/api/v1/crates/rustls/0.23.44/download), SHA256 `6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba`, confirms that its optional `ring` feature enables both the backend and WebPKI support. No custom cipher implementation or certificate verification policy is proposed.
 
+The failed network run also exposed a diagnostic gap: Rust's default panic hook bypasses the coarse phase emitter. A separate binary subprocess regression injects a fixed synthetic panic payload and requires its absence from stdout and stderr while retaining a coarse failure event. The child probe exists only under `cfg(test)`; the initial hook is a no-op pending its own hosted failing run. The normally inactive child helper passing by itself is not redaction evidence.
+
 The bounded experiment has two phases:
 
 1. Tests use real Tor request types, owned private filesystem trees, cancellation/drop guards and actual cmsg MLS over bounded in-process streams. They verify allowed routes, virtual-port restrictions, refusal of unsafe storage locations, phase deadlines, capacity and cancellation. The in-process stream test is cryptographic/framing integration evidence, not a Tor network test.

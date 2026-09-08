@@ -22,6 +22,11 @@ const MAX_STREAM_REQUESTS: usize = 4;
 fn emit(phase: &'static str, state: &'static str) {
     println!("{}", serde_json::json!({ "phase": phase, "state": state }));
 }
+
+fn install_coarse_panic_hook() {
+    // Pending implementation: a separate subprocess regression must fail first.
+}
+
 async fn phase<T, F>(name: &'static str, seconds: u64, future: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
@@ -171,6 +176,7 @@ async fn network(state: &OwnedState) -> Result<()> {
 }
 
 fn main() {
+    install_coarse_panic_hook();
     let arguments: Vec<String> = std::env::args().collect();
     if arguments.len() != 4
         || arguments[1] != "--run-public-network"
@@ -210,5 +216,37 @@ fn main() {
     emit("complete", if result.is_ok() { "passed" } else { "failed" });
     if result.is_err() {
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_coarse_panic_hook;
+    use std::process::Command;
+
+    const PANIC_MARKER: &str = "synthetic-private-panic-payload-47";
+    const CHILD_ENV: &str = "CMSG_SYNTHETIC_PANIC_CHILD";
+
+    #[test]
+    fn panic_payload_child() {
+        if std::env::var(CHILD_ENV).as_deref() == Ok("1") {
+            install_coarse_panic_hook();
+            panic!("{}", PANIC_MARKER);
+        }
+    }
+
+    #[test]
+    fn panic_payload_is_hidden_in_subprocess_output() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::panic_payload_child", "--nocapture"])
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stdout.contains(PANIC_MARKER));
+        assert!(!stderr.contains(PANIC_MARKER));
+        assert!(stdout.contains("{\"phase\":\"panic\",\"state\":\"failed\"}"));
     }
 }
