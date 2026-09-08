@@ -1,14 +1,15 @@
 //! Experimental client-side MLS text messaging. No server holds content keys.
 //!
 //! This crate is a cryptographic/transport component, not admission enforcement.
-//! Applications must verify cvld eligibility and cfrm capabilities before invoking
-//! it. No public API claims those independent proofs have been checked.
+//! Signed cvld admission binds community identity to MLS signing keys. Applications
+//! must additionally verify the applicable cfrm capability; this crate does not
+//! claim private quota enforcement.
 mod admission;
 mod member;
 mod transport;
 
-pub use admission::{AdmissionGrant, AdmissionTrust, verify_admission};
-pub use member::{Invitation, Member, Received};
+pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
+pub use member::{Invitation, Member, Received, TextMessage};
 pub use transport::{OnionEndpoint, OnionTransport};
 
 /// Maximum application text length in UTF-8 bytes, not characters.

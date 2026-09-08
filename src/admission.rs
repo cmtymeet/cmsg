@@ -18,8 +18,67 @@ pub struct AdmissionGrant {
 pub struct AdmissionTrust {
     pub community_id: String,
     pub policy_digest: String,
-    pub issuer_public_key: [u8;32],
+    pub issuer_public_key: [u8; 32],
 }
-pub fn verify_admission(_grant: &AdmissionGrant, _trust: &AdmissionTrust, _chat_key: &[u8], _now: u64) -> Result<String, Error> {
-    Err(Error::Admission)
+/// Verify independently configured issuer trust and bind it to the MLS signing key.
+pub fn verify_admission(
+    grant: &AdmissionGrant,
+    trust: &AdmissionTrust,
+    chat_key: &[u8],
+    now: u64,
+) -> Result<String, Error> {
+    use data_encoding::BASE64URL_NOPAD;
+    use ed25519_dalek::{Signature, VerifyingKey};
+    use sha2::{Digest, Sha256};
+    let valid32 = |s: &str| {
+        s.len() == 43
+            && BASE64URL_NOPAD
+                .decode(s.as_bytes())
+                .is_ok_and(|b| b.len() == 32)
+    };
+    if grant.version != 1
+        || grant.community_id != trust.community_id
+        || grant.policy_digest != trust.policy_digest
+        || grant.issued_at > now
+        || now >= grant.expires_at
+        || grant.expires_at > 9_007_199_254_740_991
+        || grant.community_id.is_empty()
+        || grant.community_id.len() > 256
+        || !grant
+            .community_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
+        || ![
+            &grant.issuer_key_id,
+            &grant.member_id,
+            &grant.chat_public_key,
+            &grant.policy_digest,
+        ]
+        .iter()
+        .all(|s| valid32(s))
+        || grant.chat_public_key != BASE64URL_NOPAD.encode(chat_key)
+        || grant.issuer_key_id != BASE64URL_NOPAD.encode(&Sha256::digest(trust.issuer_public_key))
+    {
+        return Err(Error::Admission);
+    }
+    let signed = serde_json::to_vec(&serde_json::json!([
+        "cvld.admission.v1",
+        grant.issuer_key_id,
+        grant.community_id,
+        grant.member_id,
+        grant.chat_public_key,
+        grant.policy_digest,
+        grant.issued_at,
+        grant.expires_at,
+    ]))
+    .map_err(|_| Error::Admission)?;
+    let signature = BASE64URL_NOPAD
+        .decode(grant.signature.as_bytes())
+        .map_err(|_| Error::Admission)?;
+    let signature = Signature::from_slice(&signature).map_err(|_| Error::Admission)?;
+    VerifyingKey::from_bytes(&trust.issuer_public_key)
+        .map_err(|_| Error::Admission)?
+        .verify_strict(&signed, &signature)
+        .map_err(|_| Error::Admission)?;
+    Ok(grant.member_id.clone())
 }

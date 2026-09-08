@@ -16,18 +16,29 @@ impl OnionEndpoint {
             return Err(Error::InvalidRoute);
         }
         let name = &host[..56];
-        if !name.bytes().all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b)) {
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
+        {
             return Err(Error::InvalidRoute);
         }
-        let bytes = data_encoding::BASE32_NOPAD.decode(name.to_uppercase().as_bytes())
+        let bytes = data_encoding::BASE32_NOPAD
+            .decode(name.to_uppercase().as_bytes())
             .map_err(|_| Error::InvalidRoute)?;
-        if bytes.len() != 35 || bytes[34] != 3 { return Err(Error::InvalidRoute); }
+        if bytes.len() != 35 || bytes[34] != 3 {
+            return Err(Error::InvalidRoute);
+        }
         let mut checksum = Sha3_256::new();
         checksum.update(b".onion checksum");
         checksum.update(&bytes[..32]);
         checksum.update([3]);
-        if checksum.finalize()[..2] != bytes[32..34] { return Err(Error::InvalidRoute); }
-        Ok(Self { host: host.to_owned(), port })
+        if checksum.finalize()[..2] != bytes[32..34] {
+            return Err(Error::InvalidRoute);
+        }
+        Ok(Self {
+            host: host.to_owned(),
+            port,
+        })
     }
 }
 
@@ -40,16 +51,27 @@ pub struct OnionTransport {
 }
 impl OnionTransport {
     pub fn new(proxy: SocketAddr) -> Result<Self, Error> {
-        if !proxy.ip().is_loopback() || proxy.port() == 0 { return Err(Error::InvalidRoute); }
+        if !proxy.ip().is_loopback() || proxy.port() == 0 {
+            return Err(Error::InvalidRoute);
+        }
         Ok(Self { proxy })
     }
     pub async fn connect(&self, endpoint: &OnionEndpoint) -> Result<TcpStream, Error> {
         let mut random = [0; 32];
         getrandom::fill(&mut random).map_err(|_| Error::Randomness)?;
         let isolation = data_encoding::HEXLOWER.encode(&random);
-        tokio::time::timeout(Duration::from_secs(45), Socks5Stream::connect_with_password(
-            self.proxy, (endpoint.host.as_str(), endpoint.port), &isolation, &isolation,
-        )).await.map_err(|_| Error::Transport)?
-            .map(Socks5Stream::into_inner).map_err(|_| Error::Transport)
+        tokio::time::timeout(
+            Duration::from_secs(45),
+            Socks5Stream::connect_with_password(
+                self.proxy,
+                (endpoint.host.as_str(), endpoint.port),
+                &isolation,
+                &isolation,
+            ),
+        )
+        .await
+        .map_err(|_| Error::Transport)?
+        .map(Socks5Stream::into_inner)
+        .map_err(|_| Error::Transport)
     }
 }
