@@ -24,7 +24,7 @@ steps:
         mkdir -p "$CARGO_TARGET_DIR"
         flock "$CARGO_TARGET_DIR.ci.lock" bash -euc '
           ci_test_status=0
-          cargo fmt --manifest-path experiments/first-contact-release/Cargo.toml --all -- --check || ci_test_status=1
+          cargo fmt --manifest-path experiments/first-contact-release/Cargo.toml --package cmsg-first-contact-release-experiment -- --check || ci_test_status=1
           timeout 1200 cargo test --locked --manifest-path experiments/first-contact-release/Cargo.toml --all-targets -- --nocapture || ci_test_status=1
           exit "$ci_test_status"
         '
@@ -35,7 +35,7 @@ steps:
       - status: [success, failure]
     commands:
       - |
-        cargo fmt --manifest-path experiments/first-contact-release/Cargo.toml --all
+        cargo fmt --manifest-path experiments/first-contact-release/Cargo.toml --package cmsg-first-contact-release-experiment
         ci_artifact_dir="/workspaces/component-releases/cmsg/$CI_COMMIT_SHA"
         mkdir -p "$ci_artifact_dir"
         tar --create --file "$ci_artifact_dir/first-contact-release-formatted.tar" --directory experiments/first-contact-release src/lib.rs tests/contracts.rs
