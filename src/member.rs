@@ -539,7 +539,7 @@ impl Member {
     pub fn renew_admission(
         &mut self,
         grant: AdmissionGrant,
-        persist: impl FnOnce(&Member) -> Result<(), Error>,
+        persist: impl FnOnce(&Member, &[u8]) -> Result<(), Error>,
     ) -> Result<Vec<u8>, Error> {
         let now = self.clock.now()?;
         let old_id = self.stored_member_id()?;
@@ -614,7 +614,8 @@ impl Member {
             original_credential: old_credential,
             committed: false,
         };
-        persist(guard.member)?;
+        // Fail-first outbox boundary: exact outbound bytes follow runtime red.
+        persist(guard.member, &[])?;
         guard.committed = true;
         Ok(wire)
     }

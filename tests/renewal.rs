@@ -110,7 +110,7 @@ fn same_key_renewal_preserves_identity_before_and_after_old_certificate_expiry()
         let replacement = grant(&a, 210, renewal_time, 900);
         let mut saved = Vec::new();
         let commit = a
-            .renew_admission(replacement, |candidate| {
+            .renew_admission(replacement, |candidate, _control| {
                 assert_eq!(candidate.member_id().unwrap(), identity);
                 saved = candidate.snapshot(&KEY, CONTEXT)?;
                 Ok(())
@@ -140,18 +140,18 @@ fn failed_renewal_persistence_does_not_advance_local_identity_or_epoch() {
     clock.set(300);
     let replacement = grant(&a, 210, 300, 900);
     assert!(a
-        .renew_admission(replacement.clone(), |_| Err(Error::InvalidStore))
+        .renew_admission(replacement.clone(), |_, _| Err(Error::InvalidStore))
         .is_err());
     assert!(a.member_id().is_err());
     assert!(a.send(b"not committed").is_err());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = a.renew_admission(replacement.clone(), |_| {
+        let _ = a.renew_admission(replacement.clone(), |_, _| {
             panic!("synthetic persistence crash")
         });
     }))
     .is_err());
     assert!(a.member_id().is_err());
-    let commit = a.renew_admission(replacement, |_| Ok(())).unwrap();
+    let commit = a.renew_admission(replacement, |_, _| Ok(())).unwrap();
     b.receive(&commit).unwrap();
     text_is(
         b.receive(&a.send(b"retry succeeds").unwrap()).unwrap(),
@@ -173,7 +173,7 @@ fn expired_member_can_catch_up_control_without_exposing_text_then_renew() {
     assert!(b.receive_control(&wire).is_err());
     assert!(b.history().is_empty());
     let replacement = grant(&b, 211, 300, 900);
-    let renewal = b.renew_admission(replacement, |_| Ok(())).unwrap();
+    let renewal = b.renew_admission(replacement, |_, _| Ok(())).unwrap();
     a.receive(&renewal).unwrap();
     c.receive(&renewal).unwrap();
     let wire = b.send(b"back in current epoch").unwrap();
@@ -395,4 +395,109 @@ fn future_dated_roster_entry_is_not_history_and_cannot_consume_a_legitimate_welc
     target
         .join(&valid_welcome)
         .expect("future roster rejection must preserve pending key-package state");
+}
+
+#[test]
+fn encrypted_outbox_survives_simulated_sender_restart_and_delivers_the_exact_renewal() {
+    use chacha20poly1305::{
+        aead::{Aead, KeyInit, Payload},
+        XChaCha20Poly1305, XNonce,
+    };
+    use serde::{Deserialize, Serialize};
+    use std::io::Write;
+    use zeroize::Zeroizing;
+    const OUTBOX_KEY: [u8; 32] = [53; 32];
+    const OUTBOX_AAD: &[u8] = b"synthetic-client-renewal-outbox.v1";
+    #[derive(Serialize, Deserialize)]
+    struct Saved {
+        member: Vec<u8>,
+        commit: Vec<u8>,
+    }
+    struct OwnedFile(std::path::PathBuf);
+    impl Drop for OwnedFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let mut filename = [0; 16];
+    getrandom::fill(&mut filename).unwrap();
+    let owned = OwnedFile(std::env::temp_dir().join(format!(
+        "cmsg-outbox-{}",
+        data_encoding::HEXLOWER.encode(&filename)
+    )));
+    let clock = ManualClock::new(100);
+    let (mut a, mut b) = pair(&clock, 200, 1000);
+    clock.set(300);
+    let replacement = grant(&a, 210, 300, 900);
+    let mut persisted_commit = Vec::new();
+    let returned = a
+        .renew_admission(replacement, |candidate, control| {
+            assert!(
+                !control.is_empty(),
+                "durable intent needs the exact outbound control bytes"
+            );
+            persisted_commit = control.to_vec();
+            let bundle = Saved {
+                member: candidate.snapshot(&KEY, CONTEXT)?,
+                commit: control.to_vec(),
+            };
+            let plaintext = Zeroizing::new(serde_json::to_vec(&bundle).unwrap());
+            let mut nonce = [0; 24];
+            getrandom::fill(&mut nonce).unwrap();
+            let ciphertext = XChaCha20Poly1305::new((&OUTBOX_KEY).into())
+                .encrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: &plaintext,
+                        aad: OUTBOX_AAD,
+                    },
+                )
+                .unwrap();
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&owned.0).unwrap();
+            file.write_all(&nonce).unwrap();
+            file.write_all(&ciphertext).unwrap();
+            file.sync_all().unwrap();
+            std::fs::File::open(owned.0.parent().unwrap())
+                .unwrap()
+                .sync_all()
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(returned, persisted_commit);
+    drop(a);
+    drop(returned);
+    drop(persisted_commit);
+    // Only the client's encrypted durable file remains as recovery input.
+    let sealed = std::fs::read(&owned.0).unwrap();
+    let plaintext = Zeroizing::new(
+        XChaCha20Poly1305::new((&OUTBOX_KEY).into())
+            .decrypt(
+                XNonce::from_slice(&sealed[..24]),
+                Payload {
+                    msg: &sealed[24..],
+                    aad: OUTBOX_AAD,
+                },
+            )
+            .unwrap(),
+    );
+    let saved: Saved = serde_json::from_slice(&plaintext).unwrap();
+    let mut restored = Member::restore_with_clock(&saved.member, &KEY, CONTEXT, clock).unwrap();
+    assert!(matches!(
+        b.receive(&saved.commit).unwrap(),
+        Received::MembershipChanged
+    ));
+    assert!(b.receive(&saved.commit).is_err());
+    text_is(
+        b.receive(&restored.send(b"after outbox recovery").unwrap())
+            .unwrap(),
+        "after outbox recovery",
+    );
 }
