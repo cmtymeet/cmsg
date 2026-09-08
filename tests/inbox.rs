@@ -362,3 +362,116 @@ fn an_inbox_cannot_be_reused_by_another_recipient() {
         )
         .is_err());
 }
+#[test]
+fn local_cancel_durably_clears_pending_without_a_refund_or_redemption_call() {
+    let (_, mut b, welcome) = invitation();
+    let mut inbox = Inbox::new(&b).unwrap();
+    let mut saved = Vec::new();
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                Some(b"indeterminate-claim"),
+                &KEY,
+                CONTEXT,
+                |_| Ok(()),
+                |_| Redemption::Indeterminate
+            )
+            .unwrap(),
+        Acceptance::Pending
+    );
+    inbox
+        .cancel_pending(&b, &KEY, CONTEXT, |state| {
+            saved = state.to_vec();
+            Ok(())
+        })
+        .unwrap();
+    assert!(inbox.pending_welcome().is_none());
+    let (restored, _) = Inbox::restore(&saved, &KEY, CONTEXT).unwrap();
+    assert!(restored.pending_welcome().is_none());
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                None,
+                &KEY,
+                CONTEXT,
+                |_| panic!("new permit required"),
+                |_| panic!("no refund")
+            )
+            .unwrap(),
+        Acceptance::NeedsPermit
+    );
+}
+#[test]
+fn local_blocks_persist_and_stop_unknown_and_previously_known_inviters_before_spending() {
+    let mut a = member_with_id(230);
+    let mut b = member_with_id(231);
+    a.create_group().unwrap();
+    let welcome = a.add(&b.key_package().unwrap()).unwrap().welcome;
+    let sender = a.member_id().unwrap();
+    let mut inbox = Inbox::new(&b).unwrap();
+    let mut saved = Vec::new();
+    inbox
+        .set_blocked(&sender, true, &b, &KEY, CONTEXT, |state| {
+            saved = state.to_vec();
+            Ok(())
+        })
+        .unwrap();
+    let (mut inbox, mut b) = Inbox::restore(&saved, &KEY, CONTEXT).unwrap();
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                Some(b"unused-permit"),
+                &KEY,
+                CONTEXT,
+                |_| panic!("blocked"),
+                |_| panic!("blocked")
+            )
+            .unwrap(),
+        Acceptance::Blocked
+    );
+    inbox
+        .set_blocked(&sender, false, &b, &KEY, CONTEXT, |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                Some(b"first-attempt"),
+                &KEY,
+                CONTEXT,
+                |_| Ok(()),
+                |_| Redemption::Accepted
+            )
+            .unwrap(),
+        Acceptance::Joined
+    );
+    assert!(inbox.is_known(&sender));
+    inbox
+        .set_blocked(&sender, true, &b, &KEY, CONTEXT, |_| Ok(()))
+        .unwrap();
+    let mut a = member_with_id(230);
+    let mut b = member_with_id(231);
+    a.create_group().unwrap();
+    let welcome = a.add(&b.key_package().unwrap()).unwrap().welcome;
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                None,
+                &KEY,
+                CONTEXT,
+                |_| panic!("known but blocked"),
+                |_| panic!("known but blocked")
+            )
+            .unwrap(),
+        Acceptance::Blocked
+    );
+}

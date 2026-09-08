@@ -12,6 +12,7 @@ pub enum Acceptance {
     Pending,
     NeedsPermit,
     Busy,
+    Blocked,
 }
 /// Results from the trusted, anonymously connected cfrm redemption adapter.
 #[derive(Debug, PartialEq, Eq)]
@@ -143,6 +144,7 @@ impl Inbox {
             persist(&self.seal(recipient, wrapping_key, context)?)?;
             match redeem(
                 &self
+                    .state
                     .pending
                     .as_ref()
                     .ok_or(Error::InvalidState)?
@@ -183,8 +185,29 @@ impl Inbox {
         *self = committed;
         Ok(Acceptance::Joined)
     }
+    pub fn cancel_pending(
+        &mut self,
+        _recipient: &Member,
+        _key: &[u8; 32],
+        _context: &[u8],
+        _persist: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        Err(Error::InvalidState)
+    }
+    pub fn set_blocked(
+        &mut self,
+        _member_id: &str,
+        _blocked: bool,
+        _recipient: &Member,
+        _key: &[u8; 32],
+        _context: &[u8],
+        _persist: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        Err(Error::InvalidState)
+    }
+
     fn check_binding(&self, recipient: &Member) -> Result<(), Error> {
-        if self.state.recipient_id != recipient.member_id()?
+        if self.state.recipient_id != recipient.stored_member_id()?
             || self.state.community_id
                 != recipient
                     .trust
@@ -219,12 +242,11 @@ impl Inbox {
         let plaintext = crate::vault::open(sealed, key, &inbox_context(context))?;
         let bundle: Bundle = serde_json::from_slice(&plaintext).map_err(|_| Error::InvalidStore)?;
         let member = Member::restore(&bundle.member, key, context)?;
-        Ok((
-            Self {
-                state: bundle.inbox,
-            },
-            member,
-        ))
+        let inbox = Self {
+            state: bundle.inbox,
+        };
+        inbox.check_binding(&member)?;
+        Ok((inbox, member))
     }
 }
 fn inbox_context(context: &[u8]) -> Vec<u8> {

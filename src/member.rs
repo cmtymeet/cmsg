@@ -129,6 +129,20 @@ impl Member {
         )
     }
 
+    // Local encrypted history and recovery remain accessible after grant expiry.
+    pub(crate) fn stored_member_id(&self) -> Result<String, Error> {
+        let basic = BasicCredential::try_from(self.credential.credential.clone())
+            .map_err(|_| Error::Admission)?;
+        let grant: AdmissionGrant =
+            serde_json::from_slice(basic.identity()).map_err(|_| Error::Admission)?;
+        verify_admission(
+            &grant,
+            self.trust.as_ref().ok_or(Error::Admission)?,
+            &self.chat_public_key(),
+            grant.issued_at,
+        )
+    }
+
     /// The history is local to this client and is included in encrypted snapshots.
     pub fn history(&self) -> &[TextMessage] {
         &self.history
