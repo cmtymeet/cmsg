@@ -25,7 +25,8 @@ fn emit(phase: &'static str, state: &'static str) {
 }
 
 fn install_coarse_panic_hook() {
-    // Pending implementation: a separate subprocess regression must fail first.
+    // A panic payload can contain upstream state; the standalone binary emits no payload.
+    std::panic::set_hook(Box::new(|_| emit("panic", "failed")));
 }
 
 async fn phase<T, F>(name: &'static str, seconds: u64, future: F) -> Result<T>
