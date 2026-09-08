@@ -1,10 +1,13 @@
 //! Explicitly triggered synthetic public-network experiment, never a host daemon.
-use arti_client::{TorClient, config::TorClientConfigBuilder};
-use cmsg_embedded_onion_experiment::{allowed_request, dial_checked, mls_round_trip, Failure, OwnedState, Result, SessionScope};
+use arti_client::{config::TorClientConfigBuilder, TorClient};
+use cmsg_embedded_onion_experiment::{
+    allowed_request, dial_checked, mls_round_trip, Failure, OwnedState, Result, SessionScope,
+};
 use futures::StreamExt;
+use safelog::DisplayRedacted;
 use std::{path::Path, time::Duration};
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
-use tor_hsservice::{HsNickname, OnionServiceConfigBuilder};
+use tor_hsservice::{config::OnionServiceConfigBuilder, HsNickname};
 
 const PORT: u16 = 443;
 const TOTAL_SECONDS: u64 = 600;
@@ -20,7 +23,9 @@ fn emit(phase: &'static str, state: &'static str) {
     println!("{}", serde_json::json!({ "phase": phase, "state": state }));
 }
 async fn phase<T, F>(name: &'static str, seconds: u64, future: F) -> Result<T>
-where F: std::future::Future<Output = Result<T>> {
+where
+    F: std::future::Future<Output = Result<T>>,
+{
     emit(name, "started");
     let result = match tokio::time::timeout(Duration::from_secs(seconds), future).await {
         Ok(result) => result,
@@ -33,24 +38,47 @@ where F: std::future::Future<Output = Result<T>> {
 async fn network(state: &OwnedState) -> Result<()> {
     let (state_a, cache_a) = state.client_directories(0)?;
     let (state_b, cache_b) = state.client_directories(1)?;
-    let config_a = TorClientConfigBuilder::from_directories(state_a, cache_a).build().map_err(|_| Failure::Configuration)?;
-    let config_b = TorClientConfigBuilder::from_directories(state_b, cache_b).build().map_err(|_| Failure::Configuration)?;
+    let config_a = TorClientConfigBuilder::from_directories(state_a, cache_a)
+        .build()
+        .map_err(|_| Failure::Configuration)?;
+    let config_b = TorClientConfigBuilder::from_directories(state_b, cache_b)
+        .build()
+        .map_err(|_| Failure::Configuration)?;
     let (service_client, reader_client) = phase("bootstrap", BOOTSTRAP_SECONDS, async {
-        let a = async { TorClient::create_bootstrapped(config_a).await.map_err(|_| Failure::Network) };
-        let b = async { TorClient::create_bootstrapped(config_b).await.map_err(|_| Failure::Network) };
+        let a = async {
+            TorClient::create_bootstrapped(config_a)
+                .await
+                .map_err(|_| Failure::Network)
+        };
+        let b = async {
+            TorClient::create_bootstrapped(config_b)
+                .await
+                .map_err(|_| Failure::Network)
+        };
         tokio::try_join!(a, b)
-    }).await?;
+    })
+    .await?;
     // Separate app state already separates the two clients; this handle also gives
     // this single connection its own isolation token, without selecting another route.
     let reader_client = reader_client.isolated_client();
-    let nickname = HsNickname::try_from("synthetic-roundtrip".to_owned()).map_err(|_| Failure::Configuration)?;
+    let nickname = HsNickname::try_from("synthetic-roundtrip".to_owned())
+        .map_err(|_| Failure::Configuration)?;
     let configuration = OnionServiceConfigBuilder::default()
         .nickname(nickname)
         .max_concurrent_streams_per_circuit(1)
-        .build().map_err(|_| Failure::Configuration)?;
-    let (service, requests) = service_client.launch_onion_service(configuration)
-        .map_err(|_| Failure::Network)?.ok_or(Failure::Configuration)?;
-    let host = service.onion_address().ok_or(Failure::Network)?.to_string();
+        .build()
+        .map_err(|_| Failure::Configuration)?;
+    let (service, requests) = service_client
+        .launch_onion_service(configuration)
+        .map_err(|_| Failure::Network)?
+        .ok_or(Failure::Configuration)?;
+    // Upstream makes exposure explicit; this value is used only for the in-memory
+    // connection target and is never included in phase output.
+    let host = service
+        .onion_address()
+        .ok_or(Failure::Network)?
+        .display_unredacted()
+        .to_string();
     cmsg::OnionEndpoint::parse(&host, PORT).map_err(|_| Failure::Route)?;
     emit("owned_endpoint", "passed");
     let mut publication_events = Box::pin(service.status_events());
@@ -59,13 +87,16 @@ async fn network(state: &OwnedState) -> Result<()> {
             publication_events.next().await.ok_or(Failure::Closed)?;
         }
         Ok(())
-    }).await?;
+    })
+    .await?;
 
     let scope = SessionScope::new(Duration::from_secs(120), 1)?;
     let monitor_service = service.clone();
     let monitor = async move {
         loop {
-            if !monitor_service.status().state().is_fully_reachable() { return Err::<(), Failure>(Failure::Closed); }
+            if !monitor_service.status().state().is_fully_reachable() {
+                return Err::<(), Failure>(Failure::Closed);
+            }
             publication_events.next().await.ok_or(Failure::Closed)?;
         }
     };
@@ -76,16 +107,25 @@ async fn network(state: &OwnedState) -> Result<()> {
             // Never use handle_rend_requests(), whose concurrency is unbounded upstream.
             for _ in 0..MAX_RENDEZVOUS {
                 let request = requests.next().await.ok_or(Failure::Closed)?;
-                let accepted = tokio::time::timeout(Duration::from_secs(ACCEPT_SECONDS), request.accept())
-                    .await.map_err(|_| Failure::Deadline)?.map_err(|_| Failure::Network)?;
+                let accepted =
+                    tokio::time::timeout(Duration::from_secs(ACCEPT_SECONDS), request.accept())
+                        .await
+                        .map_err(|_| Failure::Deadline)?
+                        .map_err(|_| Failure::Network)?;
                 let mut stream_requests = Box::pin(accepted);
                 for _ in 0..MAX_STREAM_REQUESTS {
                     let request = stream_requests.next().await.ok_or(Failure::Closed)?;
                     if !allowed_request(request.request(), PORT) {
-                        request.reject(End::new_with_reason(EndReason::DONE)).await.map_err(|_| Failure::Network)?;
+                        request
+                            .reject(End::new_with_reason(EndReason::DONE))
+                            .await
+                            .map_err(|_| Failure::Network)?;
                         continue;
                     }
-                    let stream = request.accept(Connected::new_empty()).await.map_err(|_| Failure::Network)?;
+                    let stream = request
+                        .accept(Connected::new_empty())
+                        .await
+                        .map_err(|_| Failure::Network)?;
                     // The returned request iterator holds the rendezvous tunnel alive.
                     // Keep it and the service's request receiver until the full exchange ends.
                     return Ok((stream, stream_requests, requests));
@@ -93,15 +133,30 @@ async fn network(state: &OwnedState) -> Result<()> {
             }
             Err(Failure::Capacity)
         };
-        let connecting = dial_checked(&host, PORT, Duration::from_secs(CONNECT_SECONDS), move |route| async move {
-            reader_client.connect((route.host(), route.port())).await.map_err(|_| Failure::Network)
-        });
-        let ((incoming, _stream_requests, _rendezvous_requests), outgoing) = phase("connect_accept", ACCEPT_SECONDS, async {
-            tokio::try_join!(accepting, connecting)
-        }).await?;
+        let connecting = dial_checked(
+            &host,
+            PORT,
+            Duration::from_secs(CONNECT_SECONDS),
+            move |route| async move {
+                reader_client
+                    .connect((route.host(), route.port()))
+                    .await
+                    .map_err(|_| Failure::Network)
+            },
+        );
+        let ((incoming, _stream_requests, _rendezvous_requests), outgoing) =
+            phase("connect_accept", ACCEPT_SECONDS, async {
+                tokio::try_join!(accepting, connecting)
+            })
+            .await?;
         // Both data streams implement Tokio IO directly via the pinned `tokio` feature.
         // Framing is sequential request/response and flushes every complete frame.
-        phase("mls_round_trip", FRAME_SECONDS * 2, mls_round_trip(outgoing, incoming, Duration::from_secs(FRAME_SECONDS))).await
+        phase(
+            "mls_round_trip",
+            FRAME_SECONDS * 2,
+            mls_round_trip(outgoing, incoming, Duration::from_secs(FRAME_SECONDS)),
+        )
+        .await
     };
     let result = tokio::select! {
         biased;
@@ -117,16 +172,30 @@ async fn network(state: &OwnedState) -> Result<()> {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().collect();
-    if arguments.len() != 4 || arguments[1] != "--run-public-network" || arguments[2] != "--state-parent" {
-        emit("configuration", "failed"); std::process::exit(1);
+    if arguments.len() != 4
+        || arguments[1] != "--run-public-network"
+        || arguments[2] != "--state-parent"
+    {
+        emit("configuration", "failed");
+        std::process::exit(1);
     }
     let state = match OwnedState::create(Path::new(&arguments[3])) {
         Ok(state) => state,
-        Err(_) => { emit("configuration", "failed"); std::process::exit(1); }
+        Err(_) => {
+            emit("configuration", "failed");
+            std::process::exit(1);
+        }
     };
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
-        Err(_) => { drop(state); emit("runtime", "failed"); std::process::exit(1); }
+        Err(_) => {
+            drop(state);
+            emit("runtime", "failed");
+            std::process::exit(1);
+        }
     };
     let result = runtime.block_on(async {
         let scope = SessionScope::new(Duration::from_secs(TOTAL_SECONDS), 1)?;
@@ -139,5 +208,7 @@ fn main() {
     runtime.shutdown_timeout(Duration::from_secs(5));
     drop(state);
     emit("complete", if result.is_ok() { "passed" } else { "failed" });
-    if result.is_err() { std::process::exit(1); }
+    if result.is_err() {
+        std::process::exit(1);
+    }
 }

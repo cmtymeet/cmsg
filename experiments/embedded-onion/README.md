@@ -2,7 +2,7 @@
 
 This separate, non-published Rust package pins the Tor Project's Arti 0.46.0 and composes it with the local cmsg core. Crow repository 10, [pipeline 19](https://crow.corbet.ch/repos/10/pipeline/19) executed the initial behavioral contract at `ed9691bd6d3b422304946a565f0591955b6b0061`: **10 tests ran, nine failed against explicit implementation stubs, and one purely negative unsafe-parent test passed**. The negative test alone established no storage safety. The subsequent implementation awaits its hosted green run; no public-network result is claimed.
 
-The worker generated the separate 600-package lock in [pipeline 16](https://crow.corbet.ch/repos/10/pipeline/16), with SHA256 `4d7f92f3d527fa795378a3e4e4335ef05fc822f316ea6110fbba02a1d7193aed`. It is committed in this package. A prior build stopped on a stub entrypoint formatting typo before behavioral execution and is not fail-first evidence. No local build, test, dependency installation or host daemon was used.
+The worker generated the separate 600-package lock in [pipeline 16](https://crow.corbet.ch/repos/10/pipeline/16), initially with SHA256 `4d7f92f3d527fa795378a3e4e4335ef05fc822f316ea6110fbba02a1d7193aed`. The committed lock subsequently adds the experiment's direct dependency edge to already locked `safelog` 0.9.1 for upstream's explicit in-memory onion-address conversion; no resolved package version changes. Compile prerequisite failures, including the stub entrypoint typo and two version-specific API corrections, are not behavioral results. No local build, test, dependency installation or host daemon was used.
 
 The bounded experiment has two phases:
 
