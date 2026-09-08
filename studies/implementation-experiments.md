@@ -30,6 +30,19 @@ The mocked SOCKS tests are socket-level negative tests, not proof of Tor anonymi
 
 All builds and tests run on standard public GitHub-hosted runners with public source and synthetic data. No production secret or protected input is sent to CI. Dependency resolution is locked. The normal workflow additionally checks Android arm64 and iOS arm64 Rust targets without signing or paid accounts.
 
+## Measured baseline
+
+At `a48250e`, [run 34257557064](https://github.com/corbet-labs/cmsg/actions/runs/34257557064) passed twenty behavioral tests and both arm64 mobile target checks. With dependency optimization enabled and integration code still in the test/debug profile, a single synthetic process containing all 100 clients measured:
+
+| Operation | Elapsed |
+|---|---:|
+| Create and join 100 members | 2.87 seconds |
+| Encrypt and deliver to the other 99 clients | 1.48 seconds |
+| Remove one member, process the commit and deliver to remaining clients | 4.96 seconds |
+| Peak process resident memory | 49.9 MiB |
+
+These are functional scale measurements on one hosted runner, not phone benchmarks, network latency or per-user memory. The initial unoptimized dependency run was much slower; the tests now optimize cryptographic dependencies and execute the scale case once per normal run. Neither result predicts Tor throughput.
+
 ## Remaining integration and security work
 
 - The local Tor listener is a trusted deployment boundary. A loopback address is not evidence that the process is Tor. Mobile applications need a supported embedded/local Tor lifecycle, network confinement, suspension/reconnection handling and device testing. There is no ordinary-browser implementation.

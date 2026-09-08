@@ -2,7 +2,7 @@
 name = "cmsg"
 version = "0.1.0-alpha.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.91"
 description = "Experimental anonymous-transport MLS text messaging core"
 repository = "https://github.com/corbet-labs/cmsg"
 license-file = "LICENSE.md"
