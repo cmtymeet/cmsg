@@ -1,10 +1,6 @@
 use crate::{
     validate_text, verify_admission, AdmissionGrant, AdmissionTrust, Error, MAX_WIRE_BYTES,
 };
-use chacha20poly1305::{
-    aead::{Aead, KeyInit, Payload},
-    XChaCha20Poly1305, XNonce,
-};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -15,8 +11,6 @@ use tls_codec::{Deserialize as _, Serialize as _};
 use zeroize::{Zeroize, Zeroizing};
 
 const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519;
-const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
-const STORE_HEADER: &[u8] = b"cmsg-store-v1\0";
 
 /// The caller must send these over authenticated, anonymous member channels.
 /// Welcome data includes the group roster; it must not go to a central log.
@@ -216,6 +210,11 @@ impl Member {
     }
 
     pub fn join(&mut self, welcome: &[u8]) -> Result<(), Error> {
+        let prepared = self.prepare_join(welcome)?;
+        self.commit_join(prepared, |_| Ok(()))
+    }
+
+    pub(crate) fn prepare_join(&self, welcome: &[u8]) -> Result<PreparedJoin, Error> {
         self.member_id()?;
         if self.group.is_some() {
             return Err(Error::InvalidState);
@@ -224,7 +223,7 @@ impl Member {
             MlsMessageBodyIn::Welcome(welcome) => welcome,
             _ => return Err(Error::InvalidMessage),
         };
-        let mut working = WorkingProvider(OpenMlsRustCrypto::default());
+        let working = WorkingProvider(OpenMlsRustCrypto::default());
         *working
             .0
             .storage()
@@ -237,15 +236,45 @@ impl Member {
             .read()
             .map_err(|_| Error::InvalidState)?
             .clone();
-        let group =
+        let staged =
             StagedWelcome::new_from_welcome(&working.0, config().join_config(), welcome, None)
-                .map_err(|_| Error::InvalidMessage)?
-                .into_group(&working.0)
-                .map_err(|_| Error::InvalidState)?;
-        verify_group(&group, self.trust.as_ref().ok_or(Error::Admission)?)?;
-        std::mem::swap(&mut self.provider, &mut working.0);
-        self.group = Some(group);
-        Ok(())
+                .map_err(|_| Error::InvalidMessage)?;
+        let trust = self.trust.as_ref().ok_or(Error::Admission)?;
+        let sender = staged.welcome_sender().map_err(|_| Error::InvalidMessage)?;
+        let inviter = verify_credential(
+            sender.credential(),
+            sender.signature_key().as_slice(),
+            trust,
+        )?;
+        let group = staged
+            .into_group(&working.0)
+            .map_err(|_| Error::InvalidState)?;
+        verify_group(&group, trust)?;
+        Ok(PreparedJoin {
+            working,
+            group,
+            inviter,
+        })
+    }
+
+    pub(crate) fn commit_join(
+        &mut self,
+        mut prepared: PreparedJoin,
+        persist: impl FnOnce(&Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if self.group.is_some() {
+            return Err(Error::InvalidState);
+        }
+        std::mem::swap(&mut self.provider, &mut prepared.working.0);
+        self.group = Some(prepared.group);
+        let mut guard = JoinGuard {
+            member: self,
+            original: prepared.working,
+            committed: false,
+        };
+        let outcome = persist(guard.member);
+        guard.committed = outcome.is_ok();
+        outcome
     }
 
     pub fn remove(&mut self, leaf: u32) -> Result<Vec<u8>, Error> {
@@ -347,7 +376,6 @@ impl Member {
     /// locally. `context` binds this envelope to the intended wallet/community.
     /// No password derivation, server escrow or plaintext persistence is provided.
     pub fn snapshot(&self, wrapping_key: &[u8; 32], context: &[u8]) -> Result<Vec<u8>, Error> {
-        let aad = store_aad(context)?;
         let storage = self
             .provider
             .storage()
@@ -364,72 +392,13 @@ impl Member {
         };
         let plaintext =
             Zeroizing::new(serde_json::to_vec(&snapshot).map_err(|_| Error::InvalidStore)?);
-        if plaintext.len() > MAX_STORE_BYTES - 128 {
-            return Err(Error::InvalidStore);
-        }
-        let data_key = Zeroizing::new(random::<32>()?);
-        let wrap_nonce = random::<24>()?;
-        let data_nonce = random::<24>()?;
-        let wrapped = XChaCha20Poly1305::new(wrapping_key.into())
-            .encrypt(
-                XNonce::from_slice(&wrap_nonce),
-                Payload {
-                    msg: data_key.as_ref(),
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| Error::InvalidStore)?;
-        let encrypted = XChaCha20Poly1305::new((&*data_key).into())
-            .encrypt(
-                XNonce::from_slice(&data_nonce),
-                Payload {
-                    msg: &plaintext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| Error::InvalidStore)?;
-        let mut output = STORE_HEADER.to_vec();
-        output.extend_from_slice(&wrap_nonce);
-        output.extend_from_slice(&wrapped);
-        output.extend_from_slice(&data_nonce);
-        output.extend_from_slice(&encrypted);
-        Ok(output)
+        crate::vault::seal(&plaintext, wrapping_key, context)
     }
 
     /// Restores the exact saved ratchet state. Authenticating an old valid snapshot
     /// cannot detect rollback: monotonic local persistence is an integration need.
     pub fn restore(sealed: &[u8], wrapping_key: &[u8; 32], context: &[u8]) -> Result<Self, Error> {
-        let aad = store_aad(context)?;
-        let offset = STORE_HEADER.len();
-        if sealed.len() < offset + 24 + 48 + 24 + 16
-            || sealed.len() > MAX_STORE_BYTES
-            || !sealed.starts_with(STORE_HEADER)
-        {
-            return Err(Error::InvalidStore);
-        }
-        let key = Zeroizing::new(
-            XChaCha20Poly1305::new(wrapping_key.into())
-                .decrypt(
-                    XNonce::from_slice(&sealed[offset..offset + 24]),
-                    Payload {
-                        msg: &sealed[offset + 24..offset + 72],
-                        aad: &aad,
-                    },
-                )
-                .map_err(|_| Error::InvalidStore)?,
-        );
-        let cipher = XChaCha20Poly1305::new_from_slice(&key).map_err(|_| Error::InvalidStore)?;
-        let plaintext = Zeroizing::new(
-            cipher
-                .decrypt(
-                    XNonce::from_slice(&sealed[offset + 72..offset + 96]),
-                    Payload {
-                        msg: &sealed[offset + 96..],
-                        aad: &aad,
-                    },
-                )
-                .map_err(|_| Error::InvalidStore)?,
-        );
+        let plaintext = crate::vault::open(sealed, wrapping_key, context)?;
         let mut snapshot: Snapshot =
             serde_json::from_slice(&plaintext).map_err(|_| Error::InvalidStore)?;
         let provider = OpenMlsRustCrypto::default();
@@ -496,14 +465,6 @@ impl Drop for Snapshot {
         }
     }
 }
-fn store_aad(context: &[u8]) -> Result<Vec<u8>, Error> {
-    if context.is_empty() || context.len() > 128 {
-        return Err(Error::InvalidStore);
-    }
-    let mut aad = STORE_HEADER.to_vec();
-    aad.extend_from_slice(context);
-    Ok(aad)
-}
 
 struct WorkingProvider(OpenMlsRustCrypto);
 impl Drop for WorkingProvider {
@@ -538,4 +499,24 @@ fn verify_group(group: &MlsGroup, trust: &AdmissionTrust) -> Result<(), Error> {
         verify_credential(&member.credential, &member.signature_key, trust)?;
     }
     Ok(())
+}
+
+pub(crate) struct PreparedJoin {
+    working: WorkingProvider,
+    group: MlsGroup,
+    pub(crate) inviter: String,
+}
+
+struct JoinGuard<'a> {
+    member: &'a mut Member,
+    original: WorkingProvider,
+    committed: bool,
+}
+impl Drop for JoinGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.member.group = None;
+            std::mem::swap(&mut self.member.provider, &mut self.original.0);
+        }
+    }
 }

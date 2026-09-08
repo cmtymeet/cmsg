@@ -220,3 +220,145 @@ fn rejected_permit_never_joins_or_establishes_a_known_contact() {
     assert!(!inbox.is_known(&a.member_id().unwrap()));
     assert!(b.send(b"blocked").is_err());
 }
+fn member_with_id(id: u8) -> Member {
+    let mut member = Member::new().unwrap();
+    member
+        .bind_admission(
+            common::grant(&member.chat_public_key(), id),
+            common::trust(),
+            100,
+        )
+        .unwrap();
+    member
+}
+#[test]
+fn known_counterpart_survives_encrypted_restore_and_new_chat_keys_without_another_debit() {
+    let mut a = member_with_id(240);
+    let mut b = member_with_id(241);
+    a.create_group().unwrap();
+    let welcome = a.add(&b.key_package().unwrap()).unwrap().welcome;
+    let mut inbox = Inbox::new(&b).unwrap();
+    let mut saved = Vec::new();
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                Some(b"first-recipient-claim"),
+                &KEY,
+                CONTEXT,
+                |state| {
+                    saved = state.to_vec();
+                    Ok(())
+                },
+                |_| Redemption::Accepted
+            )
+            .unwrap(),
+        Acceptance::Joined
+    );
+    let (mut inbox, _) = Inbox::restore(&saved, &KEY, CONTEXT).unwrap();
+    let mut new_a = member_with_id(240);
+    let mut new_b = member_with_id(241);
+    new_a.create_group().unwrap();
+    let welcome = new_a.add(&new_b.key_package().unwrap()).unwrap().welcome;
+    assert_eq!(
+        inbox
+            .accept(
+                &mut new_b,
+                &welcome,
+                None,
+                &KEY,
+                CONTEXT,
+                |_| Ok(()),
+                |_| panic!("known counterpart must not spend again")
+            )
+            .unwrap(),
+        Acceptance::Joined
+    );
+    assert!(Inbox::restore(&saved, &[32; 32], CONTEXT).is_err());
+}
+#[test]
+fn one_group_invitation_charges_only_its_authenticated_inviter() {
+    let mut a = common::member();
+    let mut b = common::member();
+    let mut c = common::member();
+    a.create_group().unwrap();
+    b.join(&a.add(&b.key_package().unwrap()).unwrap().welcome)
+        .unwrap();
+    let welcome = a.add(&c.key_package().unwrap()).unwrap().welcome;
+    let mut inbox = Inbox::new(&c).unwrap();
+    let mut debits = 0;
+    assert_eq!(
+        inbox
+            .accept(
+                &mut c,
+                &welcome,
+                Some(b"one-invitation-claim"),
+                &KEY,
+                CONTEXT,
+                |_| Ok(()),
+                |_| {
+                    debits += 1;
+                    Redemption::Accepted
+                }
+            )
+            .unwrap(),
+        Acceptance::Joined
+    );
+    assert_eq!(debits, 1);
+    assert!(inbox.is_known(&a.member_id().unwrap()));
+    assert!(!inbox.is_known(&b.member_id().unwrap()));
+}
+#[test]
+fn pending_spend_cannot_be_reassigned_to_a_different_valid_welcome() {
+    let (_, mut b, welcome) = invitation();
+    let mut inbox = Inbox::new(&b).unwrap();
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &welcome,
+                Some(b"pending-claim"),
+                &KEY,
+                CONTEXT,
+                |_| Ok(()),
+                |_| Redemption::Indeterminate
+            )
+            .unwrap(),
+        Acceptance::Pending
+    );
+    let mut other = common::member();
+    other.create_group().unwrap();
+    let replacement = other.add(&b.key_package().unwrap()).unwrap().welcome;
+    assert_eq!(
+        inbox
+            .accept(
+                &mut b,
+                &replacement,
+                None,
+                &KEY,
+                CONTEXT,
+                |_| panic!("no replacement"),
+                |_| panic!("no replacement")
+            )
+            .unwrap(),
+        Acceptance::Busy
+    );
+}
+#[test]
+fn an_inbox_cannot_be_reused_by_another_recipient() {
+    let (_, mut b, welcome) = invitation();
+    let other = common::member();
+    let mut inbox = Inbox::new(&other).unwrap();
+    assert!(inbox
+        .accept(
+            &mut b,
+            &welcome,
+            Some(b"attempt"),
+            &KEY,
+            CONTEXT,
+            |_| panic!("wrong recipient"),
+            |_| panic!("wrong recipient")
+        )
+        .is_err());
+}

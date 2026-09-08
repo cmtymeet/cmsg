@@ -9,6 +9,7 @@ mod inbox;
 mod member;
 mod rendezvous;
 mod transport;
+mod vault;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
 pub use inbox::{Acceptance, Inbox, Redemption};
