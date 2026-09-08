@@ -2,7 +2,7 @@
 use cmsg::{Error, FramedStream, MAX_WIRE_BYTES};
 use std::time::Duration;
 use tokio::{
-    io::{duplex, AsyncReadExt, AsyncWriteExt},
+    io::{duplex, AsyncReadExt, AsyncWriteExt, BufStream},
     net::{TcpListener, TcpStream},
     time::{sleep, timeout},
 };
@@ -113,6 +113,22 @@ async fn slowloris_cannot_extend_the_whole_frame_deadline() {
 async fn blocked_writes_expire_and_poison_the_stream() {
     let (stream, _unread_peer) = duplex(1);
     let mut framed = FramedStream::new(stream, 32, Duration::from_millis(40)).unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), framed.send_frame(&[1; 16]))
+            .await
+            .unwrap(),
+        Err(Error::Transport)
+    );
+    assert_eq!(framed.send_frame(b"retry").await, Err(Error::Transport));
+}
+
+#[tokio::test]
+async fn buffered_flush_is_inside_the_whole_write_deadline() {
+    let (stream, _unread_peer) = duplex(1);
+    // The frame fits the writer buffer, so its writes succeed without waiting;
+    // only flushing it to the deliberately unread stream applies backpressure.
+    let buffered = BufStream::with_capacity(32, 128, stream);
+    let mut framed = FramedStream::new(buffered, 32, Duration::from_millis(40)).unwrap();
     assert_eq!(
         timeout(Duration::from_secs(2), framed.send_frame(&[1; 16]))
             .await

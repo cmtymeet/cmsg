@@ -26,7 +26,7 @@ Connection and proof concurrency limits remain necessary alongside byte deadline
 
 ## Execution boundary
 
-The new nine fail-first Rust specifications cover real loopback fragmentation and consecutive frames, exact binary writes, immediate length rejection, truncated headers/bodies, slowloris input across the header/body boundary, blocked writes, cancellation and invalid configuration. Bounded duplex streams exercise deterministic backpressure. These are codec tests, with no real Tor claim; implementation follows actual runtime red on the existing Crow worker.
+The new ten fail-first Rust specifications cover real loopback fragmentation and consecutive frames, exact binary writes, immediate length rejection, truncated headers/bodies, slowloris input across the header/body boundary, blocked writes, cancellation and invalid configuration. Bounded duplex streams exercise deterministic backpressure, including a buffered stream whose writes succeed but whose flush must time out. These are codec tests, with no real Tor claim; implementation follows actual runtime red on the existing Crow worker.
 
 The earlier isolated experiment passed on a disposable GitHub runner in [run 34258388661](https://github.com/corbet-labs/cmsg/actions/runs/34258388661), using nine real Tor processes and official Chutney revision `6cc158868d722e652975cb4efd5b278d95ff2fbb`. Repeating it needs `tor`, `tor-gencert`, the matching Chutney source and Python dependencies, owned temporary network data and loopback ports. The original workflow installed these only on that disposable runner. Its public-network counterpart failed at bootstrap and remains unverified.
 
