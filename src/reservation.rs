@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReservationPolicy {
-    pub account_policy_digest: [u8; 32],
+    pub state_policy_digest: [u8; 32],
     pub opened_at: u64,
     pub abandon_after: u64,
 }
@@ -22,6 +22,7 @@ pub struct ReservationExpectation {
     pub history_digest: [u8; 32],
     pub phase: u8,
     pub opened_at: u64,
+    pub expires_at: u64,
     pub challenge: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +43,7 @@ pub struct ReservationContexts {
 pub struct VerifiedReservation {
     #[serde(flatten)]
     pub expected: ReservationExpectation,
-    pub account_policy_digest: [u8; 32],
+    pub state_policy_digest: [u8; 32],
     pub state_version: u64,
     pub state_commitment: [u8; 32],
     pub presentation_binding: [u8; 32],

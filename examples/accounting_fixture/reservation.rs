@@ -18,12 +18,13 @@ impl Bridge {
   let manifest:Value=serde_json::from_slice(&std::fs::read(&bridge.manifest).map_err(|_|"trusted manifest")?).map_err(|_|"trusted manifest")?;
   if manifest["accountingMode"]!="account-state-v2" {return Err("trusted accounting mode");}
   let p=&manifest["accountPolicy"];
-  let mut bytes=b"cfrm.account-policy.v2\0".to_vec();bytes.extend_from_slice(&Sha256::digest(b"synthetic-community"));
+  let mut bytes=b"cfrm.account-state-policy.v1\0".to_vec();bytes.extend_from_slice(&Sha256::digest(b"synthetic-community"));
   for name in ["initialCredit","maximumAvailable","outgoingReservation","incomingReservation"] {bytes.extend_from_slice(&u32::try_from(number(p,name)?).map_err(|_|"policy bound")?.to_be_bytes());}
   for name in ["policyRevision","policyValidFrom","policyValidUntil","newcomerPeriod","rateWindow"] {bytes.extend_from_slice(&number(p,name)?.to_be_bytes());}
   for name in ["newcomerAdmissions","maximumAdmissions"] {bytes.extend_from_slice(&u32::try_from(number(p,name)?).map_err(|_|"policy bound")?.to_be_bytes());}
   bytes.extend_from_slice(&number(p,"refillPeriod")?.to_be_bytes());bytes.extend_from_slice(&u32::try_from(number(p,"refillUnits")?).map_err(|_|"policy bound")?.to_be_bytes());
-  let abandon=number(p,"abandonAfter")?;bytes.extend_from_slice(&abandon.to_be_bytes());bytes.push(32);
+  let abandon=number(p,"abandonAfter")?;bytes.push(32);
+  if bytes.len()!=138 {return Err("state policy transcript length");}
   // The composed fixture uses the actual live Inbox gate. No application is
   // generated during this handshake or before the two Active proofs bind.
   pair.ai=core(cmsg::Inbox::new_live(&pair.a))?;pair.bi=core(cmsg::Inbox::new_live(&pair.b))?;
@@ -36,7 +37,7 @@ impl Bridge {
   core(pair.ai.receive_contact(&mut pair.a,&bh,&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;
   core(pair.bi.receive_contact(&mut pair.b,&ah,&KEY,CONTEXT,|checkpoint|bridge.save(1,checkpoint)))?;
   bridge.flush(pair)?;
-  let policy=ReservationPolicy {account_policy_digest:Sha256::digest(&bytes).into(),opened_at:pair.time.0.load(Ordering::Relaxed),abandon_after:abandon};
+  let policy=ReservationPolicy {state_policy_digest:Sha256::digest(&bytes).into(),opened_at:pair.time.0.load(Ordering::Relaxed),abandon_after:abandon};
   let a=core(pair.ai.require_active_reservations(&pair.a,policy.clone(),&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;
   let b=core(pair.bi.require_active_reservations(&pair.b,policy,&KEY,CONTEXT,|checkpoint|bridge.save(1,checkpoint)))?;
   core(pair.ai.set_own_reservation_challenge(&pair.a,&b.outgoing.expected.challenge,&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;

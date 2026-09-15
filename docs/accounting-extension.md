@@ -189,15 +189,20 @@ for the lifetime of one process. No production identity determinism is implied.
   the initiator; owner 1 is the recipient. The two participant roots remain held.
 - `answer`: performs the actual MLS introduction, persisted Answer and sender
   receipt, returning `{receipt, signingBytes}` with an unsigned P-256 receipt.
-- `advance`: changes the monotonic synthetic clock to 300, after creating an
-  Answer/acknowledgment at 100 when testing late settlement. The enrollment
-  response declares the host's fixed `acceptedTimes: [100, 300]` and community
-  SHA-256 hex digest; these are fixture scope, not production time policy.
+- `advance`: changes the monotonic synthetic clock to 300 or 600 after an
+  Answer or Close. The enrollment response declares the host's fixed
+  `acceptedTimes: [100, 300, 600]` and community SHA-256 hex digest; these are
+  fixture scope, not production time policy.
 - `ack`: accepts `answer` completed by the browser's P-256 signer, validates it,
   and returns `{acknowledgment, signingBytes}` derived from the actual sender Inbox.
 - `close`: takes `now` and creates a persisted recipient Close after an actual
   introduction. A fresh process with peer expiry 200 and Close time 300 exercises
   the silent-peer expiry boundary.
+  The Close scenario does not require outgoing Close settlement: cfrm may keep
+  that sender reservation until its original deadline. A subsequent current
+  sender refund request must still use an eligible device/delegation; choose
+  `peerExpires: 10000` for that fixture scenario and keep `peerExpires: 200` for
+  separate historical-authority tests. No expired authority is revived.
 - `verify`: accepts the complete original `delegations` list. It checks retained
   root/digest identity plus actual cmsg authority, returning normalized entries.
 - `verifyReceipt` / `verifyAcknowledgment`: take the completed named object and

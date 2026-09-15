@@ -20,7 +20,10 @@ An outgoing Answer becomes an accepted decision only before the response deadlin
 ACK reaches the recipient. A canceled queued Answer leaves Close available.
 `CanceledUnconfirmed` means delivery is unknown: an authentic later ACK may
 record acceptance, but never reopen a closed contact. Neither transport writes
-nor cancellation create accounting refunds. Settlement deadlines remain the
+nor cancellation create accounting refunds. Under the selected cfrm rule,
+confirmed Answer permits early release; Close or silence returns the sender's
+capacity only at the original fixed deadline. Refunds do not restore admission
+turns or change cmsg's unresolved/contact-block history. Settlement remains the
 accounting policy's responsibility.
 
 Browser persistence receives `(checkpoint, outboundFrames, metadata)`, commits

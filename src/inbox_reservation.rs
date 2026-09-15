@@ -77,6 +77,8 @@ impl Journal {
                 || a.history_digest != b.history_digest
                 || a.opened_at != gate.policy.opened_at
                 || b.opened_at != a.opened_at
+                || Some(a.expires_at) != gate.policy.opened_at.checked_add(gate.policy.abandon_after)
+                || b.expires_at != a.expires_at
                 || a.challenge == [0; 32]
                 || b.challenge == [0; 32]
                 || gate.policy.abandon_after == 0
@@ -85,7 +87,7 @@ impl Journal {
                     .opened_at
                     .checked_add(gate.policy.abandon_after)
                     .is_none_or(|end| end > 9_007_199_254_740_991)
-                || gate.policy.account_policy_digest == [0; 32]
+                || gate.policy.state_policy_digest == [0; 32]
             {
                 return Err(Error::InvalidStore);
             }
@@ -104,13 +106,14 @@ fn check(
     policy: &ReservationPolicy,
 ) -> Result<(), Error> {
     if &value.expected != expected
-        || value.account_policy_digest != policy.account_policy_digest
+        || value.state_policy_digest != policy.state_policy_digest
         || value.state_version == 0
         || value.state_version > 9_007_199_254_740_991
         || value.state_commitment == [0; 32]
         || value.presentation_binding == [0; 32]
         || value.owner_authority == [0; 32]
         || value.valid_until <= policy.opened_at
+        || value.valid_until > expected.expires_at
         || value.valid_until > 9_007_199_254_740_991
     {
         return Err(Error::Admission);
@@ -165,7 +168,7 @@ impl Inbox {
                 .opened_at
                 .checked_add(policy.abandon_after)
                 .is_none_or(|end| end <= now || end > 9_007_199_254_740_991)
-            || policy.account_policy_digest == [0; 32]
+            || policy.state_policy_digest == [0; 32]
         {
             return Err(Error::Admission);
         }
@@ -200,6 +203,7 @@ impl Inbox {
             history_digest: contact.contact.history_digest(),
             phase: 2,
             opened_at: policy.opened_at,
+            expires_at: policy.opened_at.checked_add(policy.abandon_after).ok_or(Error::Admission)?,
             challenge: crate::live::random()?,
         };
         let mut incoming = outgoing.clone();
@@ -321,12 +325,7 @@ impl Inbox {
             || c.contact.policy_digest()? != e.contact_policy_digest
             || c.contact.history_digest() != e.history_digest
             || now < gate.policy.opened_at
-            || now
-                >= gate
-                    .policy
-                    .opened_at
-                    .checked_add(gate.policy.abandon_after)
-                    .ok_or(Error::Admission)?
+            || now >= e.expires_at
         {
             return Err(Error::Admission);
         }
