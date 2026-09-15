@@ -25,8 +25,9 @@ def from_archives(archives, destination, manifest):
         raise SystemExit("archive output must be a new isolated directory")
     verified = []
     for path, section, directory in zip(archives, ("torJs", "arti"), ("tor-js", "arti")):
-        archive = Path(path).resolve()
-        expected = Path(str(archive) + ".sha256").read_text().split()[0]
+        archive_argument = Path(path)
+        archive = archive_argument.resolve()
+        expected = Path(str(archive_argument) + ".sha256").read_text().split()[0]
         if not re.fullmatch(r"[a-fA-F0-9]{64}", expected):
             raise SystemExit("invalid archive digest record")
         digest = hashlib.sha256()
