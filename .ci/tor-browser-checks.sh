@@ -21,6 +21,12 @@ if test -n "${OPENSSL_INCLUDE_DIR:-}"; then
   export OPENSSL_INCLUDE_DIR OPENSSL_LIB_DIR
   export LD_LIBRARY_PATH="$OPENSSL_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
+if test -n "${SQLITE3_LIB_DIR:-}"; then
+  test -f "$SQLITE3_LIB_DIR/libsqlite3.so"
+  test -f "$SQLITE3_INCLUDE_DIR/sqlite3.h"
+  export SQLITE3_LIB_DIR SQLITE3_INCLUDE_DIR
+  export LD_LIBRARY_PATH="$SQLITE3_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 torjs_manifest="$scratch/source/tor-js/Cargo.toml"
 arti_manifest="$scratch/source/arti/Cargo.toml"
 # Convert the pinned upstream graph to the explicit patched path dependencies.

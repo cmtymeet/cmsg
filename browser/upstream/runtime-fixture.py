@@ -58,6 +58,8 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
     resolver.write_text("nameserver 127.0.0.1\n")
     network = TorNet.Network(NetworkConfig(tor_bin=os.environ["TOR_BIN"]))
     base = NodeConfig(controlling_pid=os.getpid(), connlimit=256, disableipv6=True,
+                      ip="127.0.0.1", ipv6_addr=None,
+                      launcher_backend=TorNet.LauncherBackend.LOCAL,
                       sandbox=False, dns_conf=str(resolver), enable_dnsport=False,
                       extra_raw_torrc="ServerDNSDetectHijacking 0\n")
     authority = dataclasses.replace(base, tag="a", authority=True, relay=True)
