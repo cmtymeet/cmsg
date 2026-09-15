@@ -38,6 +38,53 @@ def stop_signal(signum, _frame):
     raise KeyboardInterrupt(f"fixture interrupted by signal {signum}")
 
 
+def save_tail(path, destination, limit):
+    if path.is_file():
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - limit))
+            destination.write_bytes(stream.read(limit))
+
+
+def save_node_diagnostics(network, artifact, phase):
+    # These fields describe only disposable process/listener configuration.
+    # Never copy key directories, full torrc files or control authentication.
+    safe_options = {"testingtornetwork", "datadirectory", "connlimit", "nickname",
+                    "addressdisableipv6", "sandbox", "usemicrodescriptors",
+                    "__owningcontrollerprocess", "socksport", "dnsport",
+                    "controlport", "controlsocket", "runasdaemon", "address",
+                    "orport", "dirport"}
+    entries = []
+    for node in network.nodes:
+        entry = {"node": node.nick, "directory": str(node.dir),
+                 "directoryExists": node.dir.is_dir(), "phase": phase}
+        try:
+            entry["running"] = node._controller.isRunning()
+            pidfile = Path(node.pidfile)
+            entry["pidFileExists"] = pidfile.is_file()
+            if pidfile.is_file():
+                with pidfile.open("rb") as stream:
+                    pid = stream.read(128).strip()
+                entry["pid"] = int(pid) if pid.isdigit() and len(pid) <= 10 else None
+            torrc = node.torrc_path
+            entry["torrcExists"] = torrc.is_file()
+            if torrc.is_file():
+                with torrc.open("rb") as stream:
+                    lines = stream.read(65536).decode("utf-8", errors="replace").splitlines()
+                entry["startupOptions"] = [line.strip() for line in lines
+                    if line.split() and line.split()[0].lower() in safe_options]
+            entry["filesPresent"] = [name for name in ["tor.stdout", "tor.stderr",
+                "notice.log", "info.log", "cached-consensus", "cached-microdesc-consensus",
+                "cached-descriptors", "cached-descriptors.new", "cached-microdescs",
+                "cached-microdescs.new"] if (node.dir / name).is_file()]
+            for name in ["tor.stdout", "tor.stderr", "notice.log", "info.log"]:
+                save_tail(node.dir / name, artifact / f"{node.nick}-{name}", 4096)
+        except OSError as error:
+            entry["diagnosticError"] = type(error).__name__
+        entries.append(entry)
+    (artifact / f"node-status-{phase}.json").write_text(json.dumps(entries, indent=2) + "\n")
+
+
 signal.signal(signal.SIGTERM, stop_signal)
 signal.signal(signal.SIGINT, stop_signal)
 root = Path(__file__).resolve().parents[2]
@@ -60,6 +107,7 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
     base = NodeConfig(controlling_pid=os.getpid(), connlimit=256, disableipv6=True,
                       ip="127.0.0.1", ipv6_addr=None,
                       launcher_backend=TorNet.LauncherBackend.LOCAL,
+                      poll_launch_time=0.1,
                       sandbox=False, dns_conf=str(resolver), enable_dnsport=False,
                       extra_raw_torrc="ServerDNSDetectHijacking 0\n")
     authority = dataclasses.replace(base, tag="a", authority=True, relay=True)
@@ -105,6 +153,7 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
         for reserved in reservations:
             reserved.close()
         network.start(launch_phase=1)
+        save_node_diagnostics(network, artifact, "started")
         network.wait_for_bootstrap(launch_phase=1, limit_secs=360)
         nodes = list(network.nodes)
         authorities = []
@@ -173,14 +222,10 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
         stop_child(gateway)
         if log_handle is not None:
             log_handle.close()
-        # Keep bounded synthetic diagnostics, never generated secret key files.
-        if gateway_log.exists():
-            (artifact / "gateway-synthetic.log").write_text(gateway_log.read_text()[-65536:])
-        for node in network.nodes:
-            for name in ["notice.log", "info.log"]:
-                log = node.dir / name
-                if log.is_file():
-                    (artifact / f"{node.nick}-{name}").write_text(log.read_text()[-4096:])
-        for reserved in reservations:
-            reserved.close()
-        network.stop()
+        try:
+            save_tail(gateway_log, artifact / "gateway-synthetic.log", 65536)
+            save_node_diagnostics(network, artifact, "final")
+        finally:
+            for reserved in reservations:
+                reserved.close()
+            network.stop()

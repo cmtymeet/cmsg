@@ -17,6 +17,7 @@ const nativeSocks = process.env.TOR_NATIVE_SOCKS;
 if (!process.env.TORJS_DIST || !fixturePath || !nativeBinary || !nativeSocks) throw new Error('runtime fixture paths required');
 let nativeStarted = false;
 let nativeChild;
+let nativeClosed;
 async function startNative(request, response) {
   if (nativeStarted) { response.writeHead(409).end(); return; }
   nativeStarted = true;
@@ -30,6 +31,7 @@ async function startNative(request, response) {
     response.writeHead(400).end(); return;
   }
   nativeChild = spawn(nativeBinary, [nativeSocks, input.host, String(input.port)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  nativeClosed = new Promise(resolve => nativeChild.once('close', resolve));
   let output = '';
   let nativeError = '';
   nativeChild.stdout.on('data', bytes => { output = (output + bytes.toString()).slice(-4096); });
@@ -83,6 +85,7 @@ await once(server, 'listening');
 const origin = `http://127.0.0.1:${server.address().port}`;
 const profile = await mkdtemp(join(tmpdir(), 'cmsg-browser-test-'));
 let browser;
+let browserClosed;
 let socket;
 let stderr = '';
 let nextId = 1;
@@ -105,6 +108,7 @@ try {
     '--no-default-browser-check', '--disable-extensions', '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, `--disk-cache-dir=${join(profile, 'cache')}`, 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  browserClosed = new Promise(resolve => browser.once('close', resolve));
   let launchError;
   browser.on('error', error => { launchError = error; });
   browser.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-8000); });
@@ -170,20 +174,19 @@ try {
   process.stdout.write(JSON.stringify(evidence) + '\n');
 } finally {
   clearTimeout(deadline);
-  if (nativeChild?.pid && nativeChild.exitCode === null) {
-    const reaped = once(nativeChild, 'exit');
+  if (nativeChild?.pid && nativeChild.exitCode === null && nativeChild.signalCode === null) {
     nativeChild.kill('SIGKILL');
-    await reaped;
   }
+  await nativeClosed;
   socket?.close();
-  if (browser?.pid && browser.exitCode === null) {
-    const exited = once(browser, 'exit');
+  if (browser?.pid && browser.exitCode === null && browser.signalCode === null) {
     browser.kill('SIGTERM');
     const force = setTimeout(() => browser.kill('SIGKILL'), 5000);
-    await exited;
+    await browserClosed;
     clearTimeout(force);
   }
+  await browserClosed;
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
