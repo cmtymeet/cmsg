@@ -30,7 +30,7 @@ cp "$scratch/source/tor-js/Cargo.lock" "$artifact_dir/tor-js-Cargo.lock"
 date -u +%FT%TZ > "$artifact_dir/dependency-resolution-time.txt"
 result=0
 timeout 1800 cargo check --locked --manifest-path "$torjs_manifest" \
-  -p tor-js-wasm --target wasm32-unknown-unknown || result=$?
+  -p tor-js --target wasm32-unknown-unknown || result=$?
 if test "$TOR_STAGE" = service; then
   cargo update --manifest-path "$arti_manifest" --workspace
   cp "$scratch/source/arti/Cargo.lock" "$artifact_dir/arti-Cargo.lock"
