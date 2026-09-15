@@ -10,7 +10,7 @@ Strict first contact allows one bounded introduction, followed by an actual answ
 
 An already enrolled device can reconnect through ordered group catchup and private contact-history sync. Owner reopening can also create a replacement pair group using fresh root-authorized devices, the preserved contact journal, and a new recipient-prepared admission redemption. Both owners' blocks still require consent; losing every copy of the journal cannot be repaired by possession of the identity key alone. Delayed resolution receipts update their exact archived introduction without changing the current contact gate, and still require current signer authorization when delivered.
 
-At cmsg `1e70a802`, [138 native tests and the Wasm target check](https://crow.corbet.ch/repos/10/pipeline/59) passed, including the 100-member group test and 16 directional-contact tests. The [actual Chromium contract](https://crow.corbet.ch/repos/10/pipeline/60) passed identity, messaging, IndexedDB durability, replacement-group recovery and separately labeled scripted transport cases. The [browser-first evidence](docs/browser-first.md) records the exact scope. Earlier Android/iOS target checks do not establish current mobile operation.
+At cmsg `90dfb3a7`, [148 native tests and the Wasm target check](https://crow.corbet.ch/repos/10/pipeline/69) passed, including the 100-member group, directional-contact and accounting-signature tests. At `e8bac3ec`, the [19-group Chromium contract](https://crow.corbet.ch/repos/10/pipeline/70) passed identity, messaging, IndexedDB durability, replacement recovery, actual Rust/Wasm and WebCrypto accounting signatures, and separately labeled scripted transport cases. The [browser-first evidence](docs/browser-first.md) records the exact scope. Earlier Android/iOS target checks do not establish current mobile operation.
 
 The [cfrm composition](experiments/community-composition/README.md) uses actual blind-permit issuance and redemption for first-contact admission. [Four composition tests passed](https://crow.corbet.ch/repos/10/pipeline/61) with cfrm `2c4fa47c`, including initial and replacement groups without permit reuse. Full private, member-bound reciprocal accounting remains unimplemented and fails closed. A spent permit or signed receipt does not prove sincere interaction or the complete hidden accounting transition.
 
@@ -18,7 +18,7 @@ Browser Tor support includes experimental pinned TorJS/Arti overlays for onion s
 
 - [Messaging contract](docs/contract.md)
 - [Browser-first architecture and current evidence](docs/browser-first.md)
-- [Accounting delegation, receipt and sender acknowledgment extension](docs/accounting-extension.md) (source pending validation)
+- [Accounting delegation, receipt and sender acknowledgment extension](docs/accounting-extension.md)
 - [Browser bindings and experimental Tor adapters](browser/README.md)
 - [Component boundaries](docs/components.md)
 - [Reuse study](studies/messaging-components.md)

@@ -208,9 +208,15 @@ for the lifetime of one process. No production identity determinism is implied.
   `expiresAt`; returns the signed request fields and original admission/device
   authorization. `now` is the fixture scenario's current clock.
 
-The Wasm exports provide the same operations through `BrowserAccountingKey`,
-`BrowserInbox` and bounded JSON verifier functions. They perform no operator I/O.
-The added native and actual-browser/WebCrypto contracts are pending CI; this
-document does not claim they have run. The fixture's known issuer and synthetic
+The Wasm exports provide these operations through `BrowserAccountingKey`,
+`BrowserMember`, `BrowserInbox` and bounded JSON verifier functions. They perform no operator I/O.
+
+The native suite passed 148 tests plus Wasm checking at `90dfb3a77070a3f14bc2283834fa0d3188aab68c`
+(Crow 10/69). The actual Chromium contract passed 19 groups at
+`e8bac3ec17abafce942e85584e3e468068c616f4` (Crow 10/70), including Rust/Wasm
+signatures verified independently by WebCrypto, externally delegated browser
+keys, request authorization before a conversation exists, receipt/acknowledgment
+authority and encrypted P-256 recovery. Scripted transport groups remain separate.
+The fixture's known issuer and synthetic
 admission are test infrastructure, not a proof of production enrollment,
 reservation admission, global continuity, or anonymous settlement.
