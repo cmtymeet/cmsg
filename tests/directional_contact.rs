@@ -79,7 +79,8 @@ fn only_block_owner_restarts_with_a_fresh_gate_and_old_data_and_receipts_stay_cl
     assert!(matches!(p.ai.receive_contact(&mut p.a, &initiative, &KEY, CONTEXT, |_| Ok(())).unwrap(), Received::ContactPolicyChanged));
     assert!(!p.ai.is_closed(p.br.member_id()));
     assert!(p.ai.send_contact(&mut p.a, b"premature reply", &KEY, CONTEXT, |_, _| panic!("fresh introduction required")).is_err());
-    assert!(p.ai.apply_resolution(&old_receipt, &p.a, &KEY, CONTEXT, |_| panic!("old receipt cannot alter current nonce")).is_err());
+    assert!(!p.ai.apply_resolution(&old_receipt, &p.a, &KEY, CONTEXT, |_| panic!("duplicate archived receipt needs no write")).unwrap());
+    assert!(!p.ai.is_closed(p.br.member_id()), "old receipt cannot alter the current nonce");
     assert!(p.bi.receive_contact(&mut p.b, &delayed, &KEY, CONTEXT, |_| panic!("old plaintext must not escape")).is_err());
     let (mut restored, mut b) = Inbox::restore_with_clock(&saved, &KEY, CONTEXT, p.time.clone()).unwrap();
     restored.merge_contact_sync(&stale, &b, &KEY, CONTEXT, |_| Ok(())).unwrap();
@@ -302,4 +303,69 @@ fn delayed_sender_cancellation_preserves_the_recipients_own_close_provenance() {
     let consent = p.bi.consent_contact(&mut p.b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
     p.ai.receive_contact(&mut p.a, &consent, &KEY, CONTEXT, |_| Ok(())).unwrap();
     assert!(!p.ai.is_closed(p.br.member_id()));
+}
+
+#[test]
+fn delayed_archived_resolution_is_durable_and_cannot_change_the_fresh_gate() {
+    for already_answered in [false, true] {
+        let mut p = if already_answered { established() } else { pending() };
+        p.bi.block_member_until(p.ar.member_id(), None, &p.b, &KEY, CONTEXT, |_| Ok(())).unwrap();
+        let receipt: ContactResolution = serde_json::from_slice(
+            p.bi.outbound_resolution_receipt(p.ar.member_id()).unwrap()).unwrap();
+        // The authenticated owner initiative arrives before its separate receipt.
+        let fresh = p.bi.initiate_contact(&mut p.b, &FRESH, policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+        p.ai.receive_contact(&mut p.a, &fresh, &KEY, CONTEXT, |_| Ok(())).unwrap();
+        assert_eq!(p.ai.awaiting_peer_resolution(p.br.member_id()), !already_answered);
+        let before: serde_json::Value = serde_json::from_slice(&p.ai.export_contact_sync(&p.a).unwrap()).unwrap();
+
+        let unknown = p.b.sign_contact_resolution(p.ar.member_id(), &[99; 32], cmsg::ContactResolutionKind::ClosedForever).unwrap();
+        assert!(p.ai.apply_resolution(&unknown, &p.a, &KEY, CONTEXT, |_| panic!("unknown nonce must not persist")).is_err());
+        if !already_answered {
+            let claimed_answer = p.b.sign_contact_resolution(p.ar.member_id(), &INITIAL, cmsg::ContactResolutionKind::Answered).unwrap();
+            assert!(p.ai.apply_resolution(&claimed_answer, &p.a, &KEY, CONTEXT, |_| panic!("a claim cannot replace the actual answer")).is_err());
+        }
+        assert!(p.ai.apply_resolution(&receipt, &p.a, &KEY, CONTEXT, |_| Err(Error::InvalidStore)).is_err());
+        assert_eq!(p.ai.awaiting_peer_resolution(p.br.member_id()), !already_answered);
+        let after_failure: serde_json::Value = serde_json::from_slice(&p.ai.export_contact_sync(&p.a).unwrap()).unwrap();
+        assert_eq!(before, after_failure, "failed persistence leaves all evidence unchanged");
+
+        let mut saved = Vec::new();
+        assert_eq!(p.ai.apply_resolution(&receipt, &p.a, &KEY, CONTEXT,
+            |state| { saved = state.to_vec(); Ok(()) }).unwrap(), !already_answered);
+        assert!(!p.ai.awaiting_peer_resolution(p.br.member_id()));
+        assert!(!p.ai.is_closed(p.br.member_id()));
+        let after: serde_json::Value = serde_json::from_slice(&p.ai.export_contact_sync(&p.a).unwrap()).unwrap();
+        assert_eq!(before["introductions"], after["introductions"]);
+        assert_eq!(before["directional"], after["directional"]);
+        assert!(!p.ai.apply_resolution(&receipt, &p.a, &KEY, CONTEXT, |_| panic!("receipt replay must not persist")).unwrap());
+        let reversed = p.b.sign_contact_resolution(p.ar.member_id(), &INITIAL, cmsg::ContactResolutionKind::Answered).unwrap();
+        assert!(p.ai.apply_resolution(&reversed, &p.a, &KEY, CONTEXT, |_| panic!("closed archive cannot reverse")).is_err());
+
+        let (mut restored, mut a) = Inbox::restore_with_clock(&saved, &KEY, CONTEXT, p.time.clone()).unwrap();
+        assert!(!restored.awaiting_peer_resolution(p.br.member_id()));
+        assert!(!restored.is_closed(p.br.member_id()));
+        assert!(restored.send_contact(&mut a, b"old resolution is not a new introduction", &KEY, CONTEXT,
+            |_, _| panic!("fresh introduction still required")).is_err());
+        let intro = p.bi.send_contact(&mut p.b, b"a genuinely fresh introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+        restored.receive_contact(&mut a, &intro, &KEY, CONTEXT, |_| Ok(())).unwrap();
+        let answer = restored.send_contact(&mut a, b"answer to the new nonce", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+        p.bi.receive_contact(&mut p.b, &answer, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    }
+}
+
+#[test]
+fn internal_contact_envelopes_cannot_escape_generic_receive_or_consume_its_keys() {
+    let mut p = established();
+    for payload in [Vec::new(), vec![42; cmsg::MAX_DATA_BYTES]] {
+        let wire = p.ai.send_contact_bytes(&mut p.a, &payload, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+        assert!(p.b.receive(&wire).is_err(), "generic byte delivery must reject internal kind 2");
+        assert!(p.b.receive_control(&wire).is_err());
+        let generic = Inbox::new(&p.b).unwrap();
+        assert!(generic.receive(&mut p.b, &wire).is_err());
+        assert!(matches!(p.bi.receive_contact(&mut p.b, &wire, &KEY, CONTEXT, |_| Ok(())).unwrap(),
+            Received::Bytes(message) if message.bytes == payload && message.member_id == p.ar.member_id()));
+        assert!(p.bi.receive_contact(&mut p.b, &wire, &KEY, CONTEXT, |_| panic!("guarded replay")).is_err());
+    }
+    assert!(p.ai.send_contact_bytes(&mut p.a, &vec![0; cmsg::MAX_DATA_BYTES + 1], &KEY, CONTEXT,
+        |_, _| panic!("payload limit applies before persistence")).is_err());
 }

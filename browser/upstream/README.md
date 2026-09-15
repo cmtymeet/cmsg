@@ -39,11 +39,11 @@ backend must preserve introduction replay protection for the full lifetime of
 each introduction key, enforce one service owner per active state, expose
 bounded cancellable streams, and stop accepting streams when closed.
 
-Per-session onion keys could make in-memory service state valid, provided every
-restart generates fresh service/introduction keys and old key material is never
-restored independently of its replay state. Permanent cmsg identity remains a
-different member root key. This is an implementation path requiring tests,
-not a current hosting capability or a settled persistence policy.
+The experimental service overlay uses per-session onion keys and in-memory
+service state. Every restart creates fresh service/introduction keys; the wrapper
+offers no independent key restore. Permanent cmsg identity remains a different
+member root key. Compilation and native state tests have passed as detailed
+below; browser service reachability still requires the runtime contract.
 
 ## Raw stream stage
 
@@ -51,8 +51,9 @@ After the onion-client patch, `tor-js-onion-stream.patch` plus the
 `onion_stream.rs` overlay expose actual Arti `DataStream` bytes. Copy the overlay
 to `crates/tor-js-wasm/src/onion_stream.rs` in the isolated pinned checkout.
 The client, stream and service patches applied to the exact source archives in
-Crow run 45 at cmsg `755d83b1a`. Its full service stage also passed the Wasm
-compilation check. Generated TorJS bindings and a network test remain pending.
+Crow run 45 at cmsg `755d83b1a`. Its full service stage passed the Wasm
+compilation check and all three native ephemeral-state tests. Generated TorJS
+package validation and a network test remain pending.
 The stock dependency is not enabled by the cmsg production adapter.
 
 `connectOnion(host, port, deadlineMs)` accepts only canonical checksum-valid
@@ -67,10 +68,10 @@ The embedding factory still needs a whole-bootstrap deadline and a dedicated
 client shutdown policy, since the TypeScript client waits for bootstrap before
 entering the Wasm connect deadline.
 
-The service stage must produce the same stream type from Arti's accepted
-onion-service streams. It additionally needs fresh ephemeral key/state ownership
-and full-lifetime introduction replay protection. No JavaScript callback or
-local echo is accepted as evidence that a browser onion service is reachable.
+The service stage produces the same stream type from Arti's accepted
+onion-service streams, with fresh ephemeral key/state ownership and
+full-lifetime introduction replay protection. No JavaScript callback or local
+echo is accepted as evidence that a browser onion service is reachable.
 
 ## Isolated source application and compilation
 
@@ -126,6 +127,8 @@ native peer using the generated artifact and explicitly configured test gateway.
 
 `test-network` adds a separate source patch after `service`. Build it with
 `--features browser-test-network`; omitting that feature fails compilation.
+Crow run 49 at cmsg `20a55ac815` passed this stage's Wasm compilation check
+and all three native ephemeral-state tests. These checks do not run the network.
 This artifact requires an explicit `testNetwork` JSON option and fresh fixture
 storage in its TorJS constructor. It disables gateway bootstrap archives and
 rejects missing configuration, non-loopback fallback sockets, retained public
@@ -180,6 +183,8 @@ available in the isolated CI environment; `TOR_BIN`, `TOR_GENCERT_BIN`,
 `TOR_RUNTIME_ARTIFACT` must be explicit paths. It adds one native client to the
 26-relay network. Generated authorities, KPS keys and browser profiles are
 temporary; shutdown confirms the owned processes exit before deleting state.
+The fixture explicitly selects the local Chutney launcher and loopback IPv4
+listeners, with IPv6 disabled, regardless of inherited Chutney defaults.
 
 The contract uses the actual generated TorJS APIs and cmsg framing. Two browser
 clients publish different onions and exchange byte frames. A separate native

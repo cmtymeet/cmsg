@@ -517,7 +517,7 @@ impl Inbox {
         Ok(())
     }
 
-    /// Apply caller-configured response deadlines as permanent local closures.
+    /// Apply caller-configured response deadlines as owner-controlled closures.
     /// This requires an awake client and a trusted Clock; no operator timer or
     /// delivery promise is implied. Exact signed close receipts are retained
     /// when the device is currently authorized, for later private delivery.
@@ -619,8 +619,8 @@ impl Inbox {
     }
 
     /// Receive at most one introduction until an actual reply is durably sent.
-    /// Authenticated replies establish the contact; signed close controls make
-    /// the pair permanently closed. Rejected input exposes no plaintext/history.
+    /// Authenticated replies establish the contact; signed close controls apply
+    /// the peer's block. Rejected input exposes no plaintext/history.
     pub fn receive_contact(
         &mut self, member: &mut Member, wire: &[u8], key: &[u8; 32], context: &[u8],
         mut persist: impl FnMut(&[u8]) -> Result<(), Error>,
@@ -635,7 +635,7 @@ impl Inbox {
         // A terminal signed close receipt may still settle the original peer
         // obligation after local cancellation. No application data is exposed.
         excluded.remove(&peer);
-        let raw = candidate.receive_excluding(wire, &excluded)?;
+        let raw = candidate.receive_policy_excluding(wire, &excluded)?;
         let mut changed = self.duplicate();
         let received = match &raw {
             Received::Bytes(message) if message.member_id == peer && message.bytes.starts_with(CONTACT_DIRECTIVE_PREFIX) => {
@@ -688,7 +688,7 @@ impl Inbox {
         Ok(received)
     }
 
-    /// Send an encrypted permanent-close decision after committing it locally.
+    /// Send an encrypted owner-controlled closure after committing it locally.
     /// This is the only guarded outbound control permitted for a closed peer.
     pub fn close_contact(
         &mut self, member: &mut Member, key: &[u8; 32], context: &[u8],
@@ -717,7 +717,7 @@ impl Inbox {
     /// Commit a local decision and its exact signed outbound receipt atomically.
     /// Answered is a protocol declaration; the embedding application must pair
     /// it with the actual answer. No receipt establishes sincere participation.
-    /// ClosedForever also commits the permanent member-level exclusion.
+    /// ClosedForever also commits this member's indefinite directional block.
     #[allow(clippy::too_many_arguments)]
     pub fn resolve_introduction(
         &mut self,
@@ -763,10 +763,12 @@ impl Inbox {
         Ok(encoded)
     }
 
-    /// Apply the peer's signed decision for the locally registered nonce. True
+    /// Apply the peer's signed decision for its registered or archived nonce. True
     /// means the first unresolved-to-resolved transition. False can still persist
-    /// a later permanent closure or newly supplied receipt evidence, but never a
-    /// second first-contact resolution. This return value is not a credit proof.
+    /// a later closure or newly supplied receipt evidence, but never a
+    /// second first-contact resolution. An archived decision changes only that
+    /// introduction's evidence, never the current contact gate. Authorization
+    /// must still be current on delivery. This return value is not a credit proof.
     pub fn apply_resolution(
         &mut self,
         receipt: &ContactResolution,
@@ -777,7 +779,18 @@ impl Inbox {
     ) -> Result<bool, Error> {
         self.check_binding(member)?;
         let peer_id = &receipt.responder_id;
-        let existing = self.state.introductions.get(peer_id).ok_or(Error::InvalidState)?;
+        let archive_index = if self.state.introductions.get(peer_id)
+            .is_some_and(|entry| entry.id == receipt.introduction_id) {
+            None
+        } else {
+            Some(self.state.archived.get(peer_id)
+                .and_then(|entries| entries.iter().position(|entry| entry.id == receipt.introduction_id))
+                .ok_or(Error::InvalidState)?)
+        };
+        let existing = match archive_index {
+            Some(index) => &self.state.archived.get(peer_id).ok_or(Error::InvalidState)?[index],
+            None => self.state.introductions.get(peer_id).ok_or(Error::InvalidState)?,
+        };
         member.verify_contact_resolution(receipt, peer_id, &existing.id)?;
         if existing.strict.is_some() && receipt.kind == ContactResolutionKind::Answered && existing.decision.is_none() {
             return Err(Error::InvalidState);
@@ -795,23 +808,27 @@ impl Inbox {
                 return Err(Error::InvalidState);
             }
         }
-        if receipt.kind == ContactResolutionKind::Answered && self.is_closed(peer_id) {
+        if archive_index.is_none() && receipt.kind == ContactResolutionKind::Answered && self.is_closed(peer_id) {
             return Err(Error::Admission);
         }
         let mut changed = self.duplicate();
-        let entry = changed.state.introductions.get_mut(peer_id).ok_or(Error::InvalidState)?;
+        let entry = match archive_index {
+            Some(index) => &mut changed.state.archived.get_mut(peer_id).ok_or(Error::InvalidState)?[index],
+            None => changed.state.introductions.get_mut(peer_id).ok_or(Error::InvalidState)?,
+        };
         entry.decision = Some(receipt.kind);
         entry.inbound_receipt = Some(serde_json::to_vec(receipt).map_err(|_| Error::InvalidMessage)?);
         if receipt.kind == ContactResolutionKind::ClosedForever
             && receipt_order(entry.outbound_receipt.as_deref())?.0 != 2 {
             entry.outbound_receipt = None;
         }
-        if receipt.kind == ContactResolutionKind::ClosedForever {
+        if archive_index.is_none() && receipt.kind == ContactResolutionKind::ClosedForever {
             changed.record_peer_close(peer_id);
             if changed.state.pending.as_ref().is_some_and(|pending| &pending.inviter == peer_id) {
                 changed.state.pending = None;
             }
         }
+        changed.validate_state(member)?;
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
         Ok(first_resolution)
@@ -902,7 +919,7 @@ impl Inbox {
         Ok(encoded)
     }
 
-    /// Merge authenticated contacts and permanent closures by set union. A stale
+    /// Merge authenticated contacts and owner-controlled closure histories. A stale
     /// journal cannot erase a decision. Conflicting introduction nonces fail
     /// closed for explicit endpoint reconciliation. Replayed or stale device
     /// snapshots cannot remove a closure already known locally. This does

@@ -106,7 +106,11 @@ together. `restore` restores the combined encrypted inbox and session.
 
 `awaitingPeerResolution` distinguishes an unresolved remote obligation from
 local conversation closure. Private inbound/outbound receipt accessors retain
-the signed result for recovery. After device-certificate renewal,
+the signed result for recovery. `applyResolution(receiptJson, key, context,
+persist)` verifies a privately delivered peer receipt and saves its encrypted
+checkpoint before returning whether it resolved a previously unresolved
+introduction. Receipts for archived introductions cannot change the current
+contact gate. No raw receipt enters the transport outbox. After device-certificate renewal,
 `refreshOutboundResolution` can renew an expired stored decision without
 changing its pair, nonce or outcome; `closeContact` can then send a fresh
 encrypted close. Raw receipt bytes contain contact identities, are not MLS wire

@@ -130,6 +130,13 @@ them. Local booleans, generic membership proofs and bearer permits do not prove
 those statements. cfrm rejects `resolve_private` until a real proof backend is
 selected, implemented and independently reviewed.
 
+The [private accounting review](https://github.com/corbet-labs/cfrm/blob/main/docs/private-accounting.md)
+specifies the required proof relation and an isolated browser experiment.
+An account's latest hiding state commitment can be public without revealing
+its contact map. Public markers shared by two named accounts would reconnect
+those accounts, so event markers must be owner-specific and peer proofs stay
+private. The proposed proof backend is not enabled in production.
+
 ## Tor and browser evidence
 
 The core's native transport accepts checksum-valid v3 onion endpoints and fails
@@ -149,11 +156,12 @@ trust model: JavaScript in the same execution context can access Wasm memory.
 
 ## Evidence as of the current development work
 
-- cmsg `985487b`: [113 native tests and a Wasm target check](https://crow.corbet.ch/repos/10/pipeline/38).
-- cfrm `5ce4996`: [21 Rust tests, 55 historical JavaScript tests, and portable permit Wasm checking](https://crow.corbet.ch/repos/9/pipeline/29).
+- cmsg `9b91cee`: [126 native tests and a Wasm target check](https://crow.corbet.ch/repos/10/pipeline/46). Later review found reopening and archived-state regressions; their fixes require new validation.
+- cfrm `3bc89d0`: [21 Rust tests, 55 historical JavaScript tests, and portable permit Wasm checking](https://crow.corbet.ch/repos/9/pipeline/33), plus [63 actual Chromium checks](https://crow.corbet.ch/repos/9/pipeline/32) for the signed public roster, blind-permit flow, encrypted checkpoints and tampering.
 - cmsg `4a5f826`: [actual Chromium/Wasm contract](https://crow.corbet.ch/repos/10/pipeline/44): identity and MLS cryptography, sealed recovery, tamper/replay rejection, durable IndexedDB checkpoint/outbox operations, and separately labeled scripted transport cases. Chrome152.0.7977.64; no unexpected tab requests. This run covers the earlier closure semantics.
 - cmsg `d7d8f77` with cfrm `5ce4996`: [four actual composition tests](https://crow.corbet.ch/repos/10/pipeline/42), including member/device signature verification and blind permits gating recipient MLS admission.
-- Directional blocker-controlled reopening/timers, cfrm browser bindings and live Tor hosting require their own passing evidence. Earlier runs do not validate later edits.
+- cmsg `755d83b`: [pinned TorJS/Arti service Wasm compilation and three ephemeral-state tests](https://crow.corbet.ch/repos/10/pipeline/45). The separate private-test-network artifact [passed these checks](https://crow.corbet.ch/repos/10/pipeline/49) at `20a55ac8`. Generated-binding and network behavior require separate runtime evidence.
+- Final directional reopening changes and live Tor hosting require their own passing evidence. Earlier runs do not validate later edits. No unexpected tab requests in a browser contract is not a host packet capture.
 
 GHA is the primary executor; Crow supplies the same core/browser scripts as a
 fallback. The results above were produced on Crow while GHA was unavailable.

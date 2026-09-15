@@ -584,7 +584,7 @@ impl Member {
     }
 
     pub fn receive(&mut self, wire: &[u8]) -> Result<Received, Error> {
-        self.process_incoming(wire, false, &BTreeSet::new())
+        self.process_incoming(wire, false, false, &BTreeSet::new())
     }
 
     pub(crate) fn receive_excluding(
@@ -592,13 +592,23 @@ impl Member {
         wire: &[u8],
         excluded: &BTreeSet<String>,
     ) -> Result<Received, Error> {
-        self.process_incoming(wire, false, excluded)
+        self.process_incoming(wire, false, false, excluded)
+    }
+
+    /// Decode the bounded internal contact envelope only inside the guarded
+    /// inbox. Generic receive must retain its public text/data size contract.
+    pub(crate) fn receive_policy_excluding(
+        &mut self,
+        wire: &[u8],
+        excluded: &BTreeSet<String>,
+    ) -> Result<Received, Error> {
+        self.process_incoming(wire, false, true, excluded)
     }
 
     /// Process only authenticated control while a local certificate is expired.
     /// Application messages are rejected without changing ratchets or history.
     pub fn receive_control(&mut self, wire: &[u8]) -> Result<(), Error> {
-        match self.process_incoming(wire, true, &BTreeSet::new())? {
+        match self.process_incoming(wire, true, false, &BTreeSet::new())? {
             Received::MembershipChanged => Ok(()),
             Received::Text(_)
             | Received::Bytes(_)
@@ -611,6 +621,7 @@ impl Member {
         &mut self,
         wire: &[u8],
         control_only: bool,
+        allow_policy: bool,
         excluded: &BTreeSet<String>,
     ) -> Result<Received, Error> {
         if control_only {
@@ -676,7 +687,7 @@ impl Member {
                         member_id,
                         bytes: body.to_vec(),
                     }),
-                    2 if body.len() <= MAX_WIRE_BYTES / 2 => Received::Bytes(DataMessage {
+                    2 if allow_policy && body.len() <= MAX_WIRE_BYTES / 2 => Received::Bytes(DataMessage {
                         member_id,
                         bytes: body.to_vec(),
                     }),

@@ -2,7 +2,7 @@
 //! JavaScript owns the UI, durable ciphertext storage and Tor transport. These
 //! bindings never call browser fetch, render messages or choose a gateway.
 use crate::{
-    Acceptance, AdmissionGrant, AdmissionTrust, Clock, DeviceAuthorization, Error,
+    Acceptance, AdmissionGrant, AdmissionTrust, Clock, ContactResolution, DeviceAuthorization, Error,
     FirstContactPolicy, FirstContactRole, FrameCodec, Inbox, Invitation, Member, MemberIdentity,
     OnionEndpoint, Participant, Received, Redemption, MAX_DATA_BYTES, MAX_WIRE_BYTES,
 };
@@ -503,6 +503,30 @@ impl BrowserInbox {
         self.inbox
             .outbound_resolution_receipt(peer)
             .map(<[u8]>::to_vec)
+    }
+
+    /// Apply a private peer receipt and save the resulting encrypted checkpoint.
+    /// Receipt identities never enter the message transport outbox.
+    #[wasm_bindgen(js_name = applyResolution)]
+    pub async fn apply_resolution(
+        &mut self,
+        receipt_json: &str,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<bool, JsValue> {
+        if receipt_json.len() > MAX_WIRE_BYTES {
+            return Err(js_error(Error::InvalidMessage));
+        }
+        let receipt: ContactResolution =
+            serde_json::from_str(receipt_json).map_err(|_| js_error(Error::InvalidMessage))?;
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            let first_resolution =
+                inbox.apply_resolution(&receipt, member, &wrapping, context, |_| Ok(()))?;
+            Ok((first_resolution, Vec::new()))
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = refreshOutboundResolution)]

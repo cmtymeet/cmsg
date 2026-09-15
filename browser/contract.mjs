@@ -242,6 +242,18 @@ export async function runBrowserContract() {
   assert(closeReceived.kind === 'contactClosed' && senderInbox.isClosed(recipientId), 'authenticated encrypted closure reaches peer');
   assert(senderInbox.inboundResolutionReceipt(recipientId).length > 0
     && recipientInbox.outboundResolutionReceipt(senderId).length > 0, 'private resolution retained for recovery');
+  const privateCloseReceipt = new TextDecoder().decode(recipientInbox.outboundResolutionReceipt(senderId));
+  await rejects(() => senderInbox.applyResolution(privateCloseReceipt, sessionKey, sessionContext,
+    async () => false), 'private receipt application requires durability');
+  assert(await senderInbox.applyResolution(privateCloseReceipt, sessionKey, sessionContext, saveSender) === false,
+    'duplicate private receipt creates no new resolution');
+  assert((await store.read('sender')).outbound.length === 0, 'private receipt is excluded from transport outbox');
+  const forgedReceipt = JSON.parse(privateCloseReceipt);
+  forgedReceipt.signature[0] ^= 1;
+  let forgedReceiptWrites = 0;
+  await rejects(() => senderInbox.applyResolution(JSON.stringify(forgedReceipt), sessionKey, sessionContext,
+    async () => { forgedReceiptWrites += 1; return true; }), 'forged receipt rejects before persistence');
+  assert(forgedReceiptWrites === 0, 'forged receipt cannot publish a checkpoint');
   await rejects(() => recipientInbox.refreshOutboundResolution(senderId, sessionKey, sessionContext, saveRecipient), 'unexpired receipt cannot be refreshed');
   closeReceived.free();
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'peer closure stops further messages');
@@ -262,6 +274,10 @@ export async function runBrowserContract() {
   const initiativeReceived = await senderInbox.receive(initiative, sessionKey, sessionContext, saveSender);
   assert(initiativeReceived.kind === 'contactPolicyChanged', 'only blocker authenticated fresh initiative reopens');
   initiativeReceived.free();
+  assert(await senderInbox.applyResolution(privateCloseReceipt, sessionKey, sessionContext, saveSender) === false,
+    'archived receipt creates no current resolution');
+  assert(!senderInbox.isClosed(recipientId), 'archived close cannot close the fresh contact');
+  assert((await store.read('sender')).outbound.length === 0, 'archived receipt remains private');
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'new recipient must await actual intro');
   const freshIntro = await recipientInbox.sendText('fresh introduction', sessionKey, sessionContext, saveRecipient);
   await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'fresh initiative still permits only one intro');
@@ -280,7 +296,7 @@ export async function runBrowserContract() {
   assert(disconnect.endpoint === null && disconnect.sequence === 2, 'typed disconnect');
   senderInbox.free(); recipientInbox.free(); sender.identity.free(); recipient.identity.free();
   sessionKey.fill(0); store.close();
-  passed.push('generated JS API + IndexedDB: bounded intro/reply, owner-only fresh restart, stale traffic rejection and durable checkpoint/outbox');
+  passed.push('generated JS API + IndexedDB: bounded intro/reply, owner-only fresh restart, private archived receipts, stale traffic rejection and durable checkpoint/outbox');
 
   for (const port of [0, -1, 65536, 65537, 1.5, NaN, Infinity]) {
     throws(() => new BrowserOnionEndpoint(ONION, port), 'port bounds before JS integer coercion');
