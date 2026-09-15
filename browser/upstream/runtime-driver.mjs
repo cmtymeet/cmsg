@@ -36,7 +36,7 @@ async function startNative(request, response) {
   nativeChild.stderr.on('data', bytes => { nativeError = (nativeError + bytes.toString()).slice(-4096); });
   const timer = setTimeout(() => nativeChild.kill('SIGKILL'), 120_000);
   try {
-    const [code] = await once(nativeChild, 'exit');
+    const [code] = await once(nativeChild, 'close');
     if (code !== 0) {
       await writeFile(artifact + '.native-error.txt', nativeError);
       response.writeHead(500).end('native fixture failed'); return;
