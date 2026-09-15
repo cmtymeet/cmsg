@@ -1,0 +1,36 @@
+diff --git a/crates/tor-js-wasm/Cargo.toml b/crates/tor-js-wasm/Cargo.toml
+--- a/crates/tor-js-wasm/Cargo.toml
++++ b/crates/tor-js-wasm/Cargo.toml
+@@ -22,3 +22,5 @@
+     "experimental-api",
++    "onion-service-client",
++    "vanguards",
+ ]}
+ tor-rtcompat = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
+diff --git a/crates/tor-js-wasm/src/lib.rs b/crates/tor-js-wasm/src/lib.rs
+--- a/crates/tor-js-wasm/src/lib.rs
++++ b/crates/tor-js-wasm/src/lib.rs
+@@ -296,3 +296,10 @@
+ impl TorClient {
++    /// This build includes Arti onion-service-client and vanguards support.
++    /// This capability marker is not an assertion of a completed network test.
++    #[wasm_bindgen(js_name = onionClientSupported)]
++    pub fn onion_client_supported() -> bool {
++        true
++    }
++
+     /// Create a new TorClient with the given options.
+     ///
+diff --git a/src/TorClient.ts b/src/TorClient.ts
+--- a/src/TorClient.ts
++++ b/src/TorClient.ts
+@@ -29,3 +29,9 @@
+   private socketProvider: ArtiSocketProvider | null = null;
+ 
++  static async onionClientSupported(): Promise<boolean> {
++    await ensureWasmInitialized();
++    return typeof WasmTorClient.onionClientSupported === 'function'
++      && WasmTorClient.onionClientSupported();
++  }
++
+   constructor(options: TorClientOptions = {}) {

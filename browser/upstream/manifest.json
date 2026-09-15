@@ -1,0 +1,18 @@
+{
+  "torJs": {
+    "repository": "https://github.com/privacy-ethereum/tor-js.git",
+    "revision": "65bb21d536a405ba706689ca384fad2ee25e60a7",
+    "baseVersion": "0.4.1",
+    "registryIntegrity": "sha512-cUF55sKfPt4ORFaB7sT+8dPLPZqHHnit7H5NKwq05nF9e2SY8O2CyoTbZ6bYbhCfUFV7ejHmYD/o26WuptETBw==",
+    "patches": ["tor-js-onion-client.patch"]
+  },
+  "arti": {
+    "repository": "https://github.com/voltrevo/arti.git",
+    "revision": "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3"
+  },
+  "evidence": {
+    "stockOnionClientFeature": false,
+    "patchedOnionClientBuild": "unverified",
+    "browserOnionServiceHosting": "unverified"
+  }
+}

@@ -39,8 +39,11 @@ snapshots does not detect rollback or merge concurrent device state.
 
 ## Tor transport
 
-The optional `@corbet-labs/cmsg/tor-js` entrypoint uses the actual `tor-js@0.4.1`
-package. It requires an explicitly configured TorJS gateway and a whole-request
+The optional `@corbet-labs/cmsg/tor-js` entrypoint requires the pinned onion-enabled
+build of `tor-js@0.4.1` described in `upstream/`. The stock npm artifact omits
+Arti's `onion-service-client` feature and is rejected before network bootstrap.
+The patch and its generated artifact still require compile and network evidence.
+The adapter requires an explicitly configured TorJS gateway and a whole-request
 deadline. No gateway, billing account, CDN fallback or direct-IP message route
 is supplied. Bundle and serve TorJS' `wasm-file` asset with the application.
 

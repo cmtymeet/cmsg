@@ -2,12 +2,13 @@
 //! JavaScript owns the UI, durable ciphertext storage and Tor transport. These
 //! bindings never call browser fetch, render messages or choose a gateway.
 use crate::{
-    AdmissionGrant, AdmissionTrust, Clock, DeviceAuthorization, Error, FrameCodec, Invitation, Member,
-    MemberIdentity, OnionEndpoint, Participant, Received, MAX_WIRE_BYTES,
+    Acceptance, AdmissionGrant, AdmissionTrust, Clock, DeviceAuthorization, Error, FrameCodec, Inbox,
+    Invitation, Member, MemberIdentity, OnionEndpoint, Participant, Received, Redemption, MAX_WIRE_BYTES,
 };
-use js_sys::{Array, Uint8Array};
+use js_sys::{Array, Function, Promise, Uint8Array};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use zeroize::Zeroizing;
 
 fn js_error(error: Error) -> JsValue {
@@ -87,7 +88,7 @@ impl BrowserIdentity {
 
     pub fn seal(&self, key: &[u8], context: &[u8]) -> Result<Vec<u8>, JsValue> {
         self.identity
-            .seal(&wrapping_key(key)?, context)
+            .seal(&*wrapping_key(key)?, context)
             .map_err(js_error)
     }
 
@@ -101,7 +102,7 @@ impl BrowserIdentity {
         Ok(Self {
             identity: MemberIdentity::restore(
                 sealed,
-                &wrapping_key(key)?,
+                &*wrapping_key(key)?,
                 community_id,
                 expected_member_id,
                 context,
@@ -250,7 +251,7 @@ impl BrowserMember {
 
     pub fn snapshot(&self, key: &[u8], context: &[u8]) -> Result<Vec<u8>, JsValue> {
         self.member
-            .snapshot(&wrapping_key(key)?, context)
+            .snapshot(&*wrapping_key(key)?, context)
             .map_err(js_error)
     }
 
@@ -258,12 +259,268 @@ impl BrowserMember {
         Ok(Self {
             member: Member::restore_with_clock(
                 sealed,
-                &wrapping_key(key)?,
+                &*wrapping_key(key)?,
                 context,
                 Arc::new(BrowserClock),
             )
             .map_err(js_error)?,
         })
+    }
+}
+
+/// Policy-enforcing browser session. Construction consumes the low-level member.
+/// Mutations publish only after the host's async durable checkpoint/outbox write.
+#[wasm_bindgen]
+pub struct BrowserInbox {
+    inbox: Inbox,
+    member: Member,
+}
+
+// Requiring Promise<true> prevents a forgotten `return` or an unawaited write
+// from accidentally being interpreted as a durable acknowledgement. The host
+// remains trusted to implement atomic durable storage and prevent rollback.
+async fn persist_browser(
+    persist: &Function,
+    checkpoint: &[u8],
+    outbound: &[Vec<u8>],
+) -> Result<(), JsValue> {
+    let wires = Array::new();
+    for wire in outbound {
+        wires.push(&Uint8Array::from(wire.as_slice()));
+    }
+    let promise: Promise = persist
+        .call2(&JsValue::UNDEFINED, &Uint8Array::from(checkpoint), &wires)
+        .map_err(|_| js_error(Error::InvalidStore))?
+        .dyn_into()
+        .map_err(|_| js_error(Error::InvalidStore))?;
+    if JsFuture::from(promise)
+        .await
+        .map_err(|_| js_error(Error::InvalidStore))?
+        .as_bool() != Some(true)
+    {
+        return Err(js_error(Error::InvalidStore));
+    }
+    Ok(())
+}
+
+impl BrowserInbox {
+    fn duplicate(&self, key: &[u8; 32], context: &[u8]) -> Result<Self, JsValue> {
+        let sealed = self.inbox.snapshot(&self.member, key, context).map_err(js_error)?;
+        let (inbox, member) = Inbox::restore_with_clock(
+            &sealed, key, context, Arc::new(BrowserClock),
+        ).map_err(js_error)?;
+        Ok(Self { inbox, member })
+    }
+
+    async fn update<T>(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: &Function,
+        operation: impl FnOnce(&mut Inbox, &mut Member) -> Result<(T, Vec<Vec<u8>>), Error>,
+    ) -> Result<T, JsValue> {
+        let key = wrapping_key(key)?;
+        let mut candidate = self.duplicate(&key, context)?;
+        let (output, outbound) = operation(&mut candidate.inbox, &mut candidate.member).map_err(js_error)?;
+        let checkpoint = candidate.inbox.snapshot(&candidate.member, &key, context).map_err(js_error)?;
+        persist_browser(persist, &checkpoint, &outbound).await?;
+        *self = candidate;
+        Ok(output)
+    }
+}
+
+fn acceptance_name(acceptance: Acceptance) -> String {
+    match acceptance {
+        Acceptance::Joined => "joined", Acceptance::Rejected => "rejected",
+        Acceptance::Pending => "pending", Acceptance::NeedsPermit => "needsPermit",
+        Acceptance::Busy => "busy", Acceptance::Blocked => "blocked",
+    }.into()
+}
+
+#[wasm_bindgen]
+impl BrowserInbox {
+    #[wasm_bindgen(constructor)]
+    pub fn new(member: BrowserMember) -> Result<BrowserInbox, JsValue> {
+        Ok(Self { inbox: Inbox::new(&member.member).map_err(js_error)?, member: member.member })
+    }
+
+    pub fn restore(sealed: &[u8], key: &[u8], context: &[u8]) -> Result<BrowserInbox, JsValue> {
+        let (inbox, member) = Inbox::restore_with_clock(
+            sealed, &*wrapping_key(key)?, context, Arc::new(BrowserClock),
+        ).map_err(js_error)?;
+        Ok(Self { inbox, member })
+    }
+
+    pub fn snapshot(&self, key: &[u8], context: &[u8]) -> Result<Vec<u8>, JsValue> {
+        self.inbox.snapshot(&self.member, &*wrapping_key(key)?, context).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = memberId)]
+    pub fn member_id(&self) -> Result<String, JsValue> { self.member.member_id().map_err(js_error) }
+
+    #[wasm_bindgen(js_name = chatPublicKey)]
+    pub fn chat_public_key(&self) -> Vec<u8> { self.member.chat_public_key() }
+
+    #[wasm_bindgen(js_name = isKnown)]
+    pub fn is_known(&self, peer: &str) -> bool { self.inbox.is_known(peer) }
+
+    #[wasm_bindgen(js_name = isClosed)]
+    pub fn is_closed(&self, peer: &str) -> bool { self.inbox.is_closed(peer) }
+
+    #[wasm_bindgen(js_name = isBlocked)]
+    pub fn is_blocked(&self, peer: &str) -> bool { self.inbox.is_blocked(peer) }
+
+    #[wasm_bindgen(js_name = pendingWelcome)]
+    pub fn pending_welcome(&self) -> Option<Vec<u8>> { self.inbox.pending_welcome().map(<[u8]>::to_vec) }
+
+    #[wasm_bindgen(js_name = createGroup)]
+    pub async fn create_group(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+        self.update(key, context, &persist, |_, member| {
+            member.create_group()?;
+            Ok(((), Vec::new()))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = keyPackage)]
+    pub async fn key_package(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        self.update(key, context, &persist, |_, member| {
+            let package = member.key_package()?;
+            Ok((package.clone(), vec![package]))
+        }).await
+    }
+
+    pub async fn add(&mut self, package: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<BrowserInvitation, JsValue> {
+        self.update(key, context, &persist, |inbox, member| {
+            let invitation = member.add(package)?;
+            inbox.check_group(member)?;
+            let outbound = vec![invitation.commit.clone(), invitation.welcome.clone()];
+            Ok((BrowserInvitation { invitation }, outbound))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = sendBytes)]
+    pub async fn send_bytes(&mut self, bytes: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        self.update(key, context, &persist, |inbox, member| {
+            let wire = inbox.send_bytes(member, bytes)?;
+            Ok((wire.clone(), vec![wire]))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = sendText)]
+    pub async fn send_text(&mut self, text: &str, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        self.update(key, context, &persist, |inbox, member| {
+            let wire = inbox.send(member, text.as_bytes())?;
+            Ok((wire.clone(), vec![wire]))
+        }).await
+    }
+
+    pub async fn receive(&mut self, wire: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<BrowserReceived, JsValue> {
+        self.update(key, context, &persist, |inbox, member| {
+            Ok((BrowserReceived { received: inbox.receive(member, wire)? }, Vec::new()))
+        }).await
+    }
+
+    /// persist(checkpoint, outboundFrames) must atomically commit both and resolve
+    /// true. redeem receives only trusted recipient-prepared opaque bytes, after
+    /// the pending checkpoint is durable; it resolves accepted/rejected/pending.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn accept(
+        &mut self, welcome: &[u8], recipient_redemption: Option<Vec<u8>>,
+        key: &[u8], context: &[u8], persist: Function, redeem: Function,
+    ) -> Result<String, JsValue> {
+        let key = wrapping_key(key)?;
+        let mut candidate = self.duplicate(&key, context)?;
+        let mut checkpoint = None;
+        let mut request = None;
+        let result = candidate.inbox.accept(
+            &mut candidate.member, welcome, recipient_redemption.as_deref(), &key, context,
+            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
+            |bytes| { request = Some(Zeroizing::new(bytes.to_vec())); Redemption::Indeterminate },
+        ).map_err(js_error)?;
+        if let Some(checkpoint) = checkpoint {
+            persist_browser(&persist, &checkpoint, &[]).await?;
+            *self = candidate;
+        }
+        let Some(request) = request else { return Ok(acceptance_name(result)); };
+        // Failed/ambiguous redemption keeps the exact durable pending attempt.
+        let outcome = match redeem.call1(&JsValue::UNDEFINED, &Uint8Array::from(request.as_slice())) {
+            Ok(value) => match value.dyn_into::<Promise>() {
+                Ok(promise) => JsFuture::from(promise).await.ok().and_then(|v| v.as_string()),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        let outcome = match outcome.as_deref() {
+            Some("accepted") => Redemption::Accepted,
+            Some("rejected") => Redemption::Rejected,
+            _ => return Ok("pending".into()),
+        };
+        let mut candidate = self.duplicate(&key, context)?;
+        let mut checkpoint = None;
+        // The first phase already durably stored this intent. This callback is
+        // only the observed result; it performs no second external redemption.
+        let result = candidate.inbox.accept(
+            &mut candidate.member, welcome, None, &key, context,
+            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
+            |_| match outcome { Redemption::Accepted => Redemption::Accepted, _ => Redemption::Rejected },
+        ).map_err(js_error)?;
+        if let Some(checkpoint) = checkpoint {
+            persist_browser(&persist, &checkpoint, &[]).await?;
+            *self = candidate;
+        }
+        Ok(acceptance_name(result))
+    }
+
+    #[wasm_bindgen(js_name = closeForever)]
+    pub async fn close_forever(&mut self, peer: &str, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            inbox.close_forever(peer, member, &wrapping, context, |_| Ok(()))?;
+            Ok(((), Vec::new()))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = setBlocked)]
+    pub async fn set_blocked(&mut self, peer: &str, blocked: bool, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            inbox.set_blocked(peer, blocked, member, &wrapping, context, |_| Ok(()))?;
+            Ok(((), Vec::new()))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = cancelPending)]
+    pub async fn cancel_pending(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            inbox.cancel_pending(member, &wrapping, context, |_| Ok(()))?;
+            Ok(((), Vec::new()))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = exportContactSync)]
+    pub fn export_contact_sync(&self) -> Result<Vec<u8>, JsValue> {
+        self.inbox.export_contact_sync(&self.member).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = mergeContactSync)]
+    pub async fn merge_contact_sync(&mut self, payload: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            inbox.merge_contact_sync(payload, member, &wrapping, context, |_| Ok(()))?;
+            Ok(((), Vec::new()))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = renewDeviceAdmission)]
+    pub async fn renew_device_admission(&mut self, grant: &str, authorization: &str, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        if grant.len() > MAX_WIRE_BYTES || authorization.len() > MAX_WIRE_BYTES { return Err(js_error(Error::Admission)); }
+        let grant: AdmissionGrant = serde_json::from_str(grant).map_err(|_| js_error(Error::Admission))?;
+        let authorization: DeviceAuthorization = serde_json::from_str(authorization).map_err(|_| js_error(Error::Admission))?;
+        self.update(key, context, &persist, |_, member| {
+            let wire = member.renew_device_admission(grant, authorization, |_, _| Ok(()))?;
+            Ok((wire.clone(), vec![wire]))
+        }).await
     }
 }
 

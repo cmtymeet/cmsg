@@ -136,7 +136,9 @@ impl Member {
         self.signer.to_public_vec()
     }
 
-    /// Bind the issuer-certified stable community identity to this MLS signing key.
+    /// Legacy issuer-owned identity binding. An issuer can substitute another
+    /// device under this identity. Use bind_device_admission when the admission
+    /// authority is outside the identity trust boundary.
     pub fn bind_admission(
         &mut self,
         grant: AdmissionGrant,
@@ -325,6 +327,13 @@ impl Member {
     pub fn join(&mut self, welcome: &[u8]) -> Result<(), Error> {
         let prepared = self.prepare_join(welcome)?;
         self.commit_join(prepared, |_| Ok(()))
+    }
+
+    /// Authenticate the actual MLS Welcome signer without consuming a key
+    /// package or joining. Recipient policy adapters use this stable ID when
+    /// constructing their private, invitation-bound redemption claim.
+    pub fn invitation_sender(&self, welcome: &[u8]) -> Result<String, Error> {
+        Ok(self.prepare_join(welcome)?.inviter.clone())
     }
 
     pub(crate) fn prepare_join(&self, welcome: &[u8]) -> Result<PreparedJoin, Error> {
@@ -700,14 +709,31 @@ impl Member {
         grant: AdmissionGrant,
         persist: impl FnOnce(&Member, &[u8]) -> Result<(), Error>,
     ) -> Result<Vec<u8>, Error> {
+        self.renew_admission_inner(grant, None, persist)
+    }
+
+    /// Renew this same device's root authorization and eligibility together,
+    /// including after the old certificates expire. Recovery never changes the
+    /// root-derived member identity, MLS signing key, or credential mode.
+    pub fn renew_device_admission(
+        &mut self,
+        grant: AdmissionGrant,
+        authorization: DeviceAuthorization,
+        persist: impl FnOnce(&Member, &[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
+        self.renew_admission_inner(grant, Some(authorization), persist)
+    }
+
+    fn renew_admission_inner(
+        &mut self,
+        grant: AdmissionGrant,
+        replacement_device: Option<DeviceAuthorization>,
+        persist: impl FnOnce(&Member, &[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
         let now = self.clock.now()?;
         let old_id = self.stored_member_id()?;
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
         if verify_admission(&grant, trust, &self.chat_public_key(), now)? != old_id {
-            return Err(Error::Admission);
-        }
-        let old_grant = credential_grant(&self.credential.credential)?;
-        if grant.issued_at < old_grant.issued_at || grant.expires_at <= old_grant.expires_at {
             return Err(Error::Admission);
         }
         let current = self.group.as_ref().ok_or(Error::InvalidState)?;
@@ -733,7 +759,11 @@ impl Member {
         let mut group = MlsGroup::load(working.0.storage(), current.group_id())
             .map_err(|_| Error::InvalidState)?
             .ok_or(Error::InvalidState)?;
-        let encoded = if let Some(device_authorization) = self.device_authorization()? {
+        let old_device = self.device_authorization()?;
+        if replacement_device.is_some() && old_device.is_none() {
+            return Err(Error::Admission);
+        }
+        let encoded = if let Some(device_authorization) = replacement_device.or(old_device) {
             crate::verify_device_authorization(&device_authorization, &trust.community_id,
                 &old_id, &self.chat_public_key(), now)?;
             serde_json::to_vec(&DeviceCredential { admission: grant, device_authorization })
@@ -744,6 +774,7 @@ impl Member {
             credential: BasicCredential::new(encoded).into(),
             signature_key: self.chat_public_key().into(),
         };
+        verify_renewal_advance(&self.credential.credential, &credential.credential)?;
         let parameters = LeafNodeParameters::builder()
             .with_credential_with_key(credential.clone())
             .build();
@@ -1005,7 +1036,9 @@ fn verify_historical_credential(
     }
     let identity = verify_admission(&grant, trust, key, grant.issued_at)?;
     if let Some(device) = device {
-        if device.issued_at > now {
+        if device.issued_at > now || device.expires_at <= grant.issued_at
+            || grant.expires_at <= device.issued_at
+        {
             return Err(Error::Admission);
         }
         crate::verify_device_authorization(&device, &trust.community_id, &identity, key, device.issued_at)?;
@@ -1056,12 +1089,33 @@ fn verify_leaf_change(
         return Err(Error::Admission);
     }
     if old != leaf.credential() {
-        let old_grant = credential_grant(old)?;
-        let new_grant = credential_grant(leaf.credential())?;
-        if new_grant.issued_at < old_grant.issued_at || new_grant.expires_at <= old_grant.expires_at
-        {
-            return Err(Error::Admission);
+        verify_renewal_advance(old, leaf.credential())?;
+    }
+    Ok(())
+}
+
+fn verify_renewal_advance(old: &Credential, new: &Credential) -> Result<(), Error> {
+    let (old_grant, old_device) = credential_parts(old)?;
+    let (new_grant, new_device) = credential_parts(new)?;
+    if new_grant.issued_at < old_grant.issued_at || new_grant.expires_at < old_grant.expires_at {
+        return Err(Error::Admission);
+    }
+    let mut extended = new_grant.expires_at > old_grant.expires_at;
+    match (old_device, new_device) {
+        (Some(old), Some(new)) => {
+            if new.root_public_key != old.root_public_key || new.device_public_key != old.device_public_key
+                || new.member_id != old.member_id || new.community_id != old.community_id
+                || new.issued_at < old.issued_at || new.expires_at < old.expires_at
+            {
+                return Err(Error::Admission);
+            }
+            extended |= new.expires_at > old.expires_at;
         }
+        (None, None) => (),
+        _ => return Err(Error::Admission),
+    }
+    if !extended {
+        return Err(Error::Admission);
     }
     Ok(())
 }

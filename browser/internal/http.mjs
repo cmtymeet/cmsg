@@ -124,6 +124,8 @@ export class OnionHttpTransport {
     this.#closed = true;
     this.#active?.abort.abort();
     this.#active?.reject(failure('Transport'));
-    this.#client.close();
+    // Shutdown must never leak an upstream exception containing addresses or
+    // headers, including from the timer callback and public close().
+    try { this.#client.close(); } catch { /* already closed locally */ }
   }
 }

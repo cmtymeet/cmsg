@@ -11,6 +11,7 @@
 //! logging relay. This alpha does not provide mobile bindings, storage rollback
 //! protection, guaranteed delivery or an audited anonymity system.
 mod admission;
+mod board;
 mod enrollment;
 mod framing;
 mod identity;
@@ -28,6 +29,7 @@ mod vault;
 pub mod browser;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
+pub use board::{AllocationRequest, PresenceEndpoint, PresenceUpdate};
 pub use enrollment::SemaphoreEnrollmentChallenge;
 pub use framing::FrameCodec;
 #[cfg(not(target_arch = "wasm32"))]

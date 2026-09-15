@@ -1,8 +1,9 @@
 //! Recipient-controlled first-contact acceptance, above the raw MLS primitive.
-use crate::{ContactResolution, ContactResolutionKind, Error, Member, Received, MAX_WIRE_BYTES};
+use crate::{Clock, ContactResolution, ContactResolutionKind, Error, Member, Received, MAX_WIRE_BYTES};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Serialize, Deserialize)]
@@ -13,7 +14,9 @@ struct ContactSync {
     issued_at: u64,
     device_public_key: Vec<u8>,
     credential: Vec<u8>,
+    known: BTreeSet<String>,
     closed: BTreeSet<String>,
+    introductions: BTreeMap<String, Introduction>,
     signature: Vec<u8>,
 }
 
@@ -21,7 +24,8 @@ impl ContactSync {
     fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
         serde_json::to_vec(&serde_json::json!([
             "cmsg.contact-sync.v1", self.community_id, self.owner_id,
-            self.issued_at, self.device_public_key, self.credential, self.closed,
+            self.issued_at, self.device_public_key, self.credential, self.known,
+            self.closed, self.introductions,
         ])).map_err(|_| Error::InvalidMessage)
     }
 }
@@ -31,8 +35,14 @@ impl Drop for ContactSync {
         self.community_id.zeroize();
         self.owner_id.zeroize();
         self.credential.zeroize();
+        for mut value in std::mem::take(&mut self.known) {
+            value.zeroize();
+        }
         for mut value in std::mem::take(&mut self.closed) {
             value.zeroize();
+        }
+        for (mut peer, _) in std::mem::take(&mut self.introductions) {
+            peer.zeroize();
         }
     }
 }
@@ -62,6 +72,7 @@ pub struct Inbox {
 struct InboxState {
     community_id: String,
     recipient_id: String,
+    root_authorized: bool,
     known: BTreeSet<String>,
     #[serde(default)]
     blocked: BTreeSet<String>,
@@ -131,6 +142,7 @@ impl Inbox {
                     .community_id
                     .clone(),
                 recipient_id: recipient.member_id()?,
+                root_authorized: recipient.device_authorization()?.is_some(),
                 known: BTreeSet::new(),
                 blocked: BTreeSet::new(),
                 closed: BTreeSet::new(),
@@ -358,6 +370,7 @@ impl Inbox {
     /// Register the shared, unpredictable first-introduction ID after peer
     /// authentication. A second thread cannot replace a member's unresolved
     /// introduction. The policy adapter controls when registration is authorized.
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_introduction(
         &mut self,
         peer_id: &str,
@@ -394,6 +407,7 @@ impl Inbox {
     /// Answered is a protocol declaration; the embedding application must pair
     /// it with the actual answer. No receipt establishes sincere participation.
     /// ClosedForever also commits the permanent member-level exclusion.
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_introduction(
         &mut self,
         peer_id: &str,
@@ -483,7 +497,9 @@ impl Inbox {
             issued_at: member.authorization_time()?,
             device_public_key: member.chat_public_key(),
             credential: member.private_identity_credential()?,
+            known: self.state.known.clone(),
             closed: self.state.closed.clone(),
+            introductions: self.state.introductions.clone(),
             signature: Vec::new(),
         };
         sync.signature = member.signer.sign(&Zeroizing::new(sync.signing_bytes()?))
@@ -495,8 +511,10 @@ impl Inbox {
         Ok(encoded)
     }
 
-    /// Merge authenticated permanent closures by set union. Replayed or stale
-    /// device snapshots cannot remove a closure already known locally. This does
+    /// Merge authenticated contacts and permanent closures by set union. A stale
+    /// journal cannot erase a decision. Conflicting introduction nonces fail
+    /// closed for explicit endpoint reconciliation. Replayed or stale device
+    /// snapshots cannot remove a closure already known locally. This does
     /// not protect a device whose entire local store and all peers are rolled back.
     /// The host must persist before acknowledging synchronization to the peer.
     pub fn merge_contact_sync(
@@ -517,7 +535,8 @@ impl Inbox {
         if sync.community_id != self.state.community_id
             || sync.owner_id != self.state.recipient_id
             || sync.issued_at == 0 || sync.issued_at > now
-            || sync.closed.iter().any(|id| !crate::admission::valid_member_id(id) || id == &sync.owner_id)
+            || sync.closed.iter().chain(&sync.known).chain(sync.introductions.keys())
+                .any(|id| !crate::admission::valid_member_id(id) || id == &sync.owner_id)
             || member.verify_private_identity_credential(&sync.credential, &sync.device_public_key, now)? != sync.owner_id
         {
             return Err(Error::Admission);
@@ -528,10 +547,28 @@ impl Inbox {
             &Signature::from_slice(&sync.signature).map_err(|_| Error::Admission)?,
         ).map_err(|_| Error::Admission)?;
         let mut changed = self.duplicate();
+        changed.state.known.extend(sync.known.iter().cloned());
         changed.state.closed.extend(sync.closed.iter().cloned());
+        for (peer, incoming) in &sync.introductions {
+            if let Some(existing) = changed.state.introductions.get_mut(peer) {
+                if existing.id != incoming.id {
+                    return Err(Error::InvalidState);
+                }
+                match (existing.decision, incoming.decision) {
+                    (None, Some(_)) => *existing = incoming.clone(),
+                    (Some(ContactResolutionKind::Answered), Some(ContactResolutionKind::ClosedForever)) => {
+                        *existing = incoming.clone();
+                    }
+                    _ => (),
+                }
+            } else {
+                changed.state.introductions.insert(peer.clone(), incoming.clone());
+            }
+        }
         if changed.state.pending.as_ref().is_some_and(|p| changed.is_closed(&p.inviter)) {
             changed.state.pending = None;
         }
+        changed.validate_state(member)?;
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
         Ok(())
@@ -561,6 +598,13 @@ impl Inbox {
         Ok(())
     }
 
+    /// Validate a candidate conversation roster before publishing an invitation
+    /// or a locally staged membership update. Hosts stage such mutations in an
+    /// isolated checkpoint, check here, then durably commit before transmitting.
+    pub fn check_group(&self, member: &Member) -> Result<(), Error> {
+        self.check_outbound(member)
+    }
+
     /// Reject excluded authenticated senders before publishing plaintext,
     /// changing receive ratchets, or appending history. A control message cannot
     /// silently reintroduce a closed identity under a different device key.
@@ -571,6 +615,7 @@ impl Inbox {
 
     fn check_binding(&self, recipient: &Member) -> Result<(), Error> {
         if self.state.recipient_id != recipient.stored_member_id()?
+            || self.state.root_authorized != recipient.device_authorization()?.is_some()
             || self.state.community_id
                 != recipient
                     .trust
@@ -604,9 +649,12 @@ impl Inbox {
                 let receipt: ContactResolution = serde_json::from_slice(bytes).map_err(|_| Error::InvalidStore)?;
                 if receipt.responder_id != self.state.recipient_id || &receipt.peer_id != peer
                     || receipt.introduction_id != introduction.id || Some(receipt.kind) != introduction.decision
+                    || receipt.community_id != self.state.community_id
+                    || receipt.issued_at == 0 || receipt.issued_at > member.authorization_time()?
                 {
                     return Err(Error::InvalidStore);
                 }
+                receipt.verify_device_signature(member, receipt.issued_at).map_err(|_| Error::InvalidStore)?;
             }
         }
         if let Some(pending) = &self.state.pending {
@@ -648,7 +696,23 @@ impl Inbox {
             Zeroizing::new(serde_json::to_vec(&bundle).map_err(|_| Error::InvalidStore)?);
         crate::vault::seal(&plaintext, key, &inbox_context(context)?)
     }
+
+    /// Export one encrypted checkpoint containing both policy and MLS state.
+    pub fn snapshot(&self, member: &Member, key: &[u8; 32], context: &[u8]) -> Result<Vec<u8>, Error> {
+        self.validate_state(member)?;
+        self.seal(member, key, context)
+    }
+
     pub fn restore(sealed: &[u8], key: &[u8; 32], context: &[u8]) -> Result<(Self, Member), Error> {
+        Self::restore_with_clock(sealed, key, context, Arc::new(crate::lifecycle::SystemClock))
+    }
+
+    pub fn restore_with_clock(
+        sealed: &[u8],
+        key: &[u8; 32],
+        context: &[u8],
+        clock: Arc<dyn Clock>,
+    ) -> Result<(Self, Member), Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Bundle {
@@ -657,7 +721,7 @@ impl Inbox {
         }
         let plaintext = crate::vault::open(sealed, key, &inbox_context(context)?)?;
         let bundle: Bundle = serde_json::from_slice(&plaintext).map_err(|_| Error::InvalidStore)?;
-        let member = Member::restore(&bundle.member, key, context)?;
+        let member = Member::restore_with_clock(&bundle.member, key, context, clock)?;
         let inbox = Self {
             state: bundle.inbox,
         };

@@ -108,3 +108,33 @@ fn authentic_old_device_stores_need_a_current_peer_or_external_freshness_anchor(
     rolled_back.merge_contact_sync(&inbox.export_contact_sync(&member).unwrap(), &restored_member, &KEY, CONTEXT, |_| Ok(())).unwrap();
     assert!(rolled_back.is_closed(peer.member_id()));
 }
+
+#[test]
+fn introduction_decisions_sync_without_reopening_or_replacing_the_shared_nonce() {
+    let owner = MemberIdentity::new("synthetic-community").unwrap();
+    let peer = MemberIdentity::new("synthetic-community").unwrap();
+    let phone = device(&owner);
+    let laptop = device(&owner);
+    let mut phone_inbox = Inbox::new(&phone).unwrap();
+    let mut laptop_inbox = Inbox::new(&laptop).unwrap();
+    let nonce = [77; 32];
+    phone_inbox.begin_introduction(peer.member_id(), &nonce, &phone, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let pending = phone_inbox.export_contact_sync(&phone).unwrap();
+    laptop_inbox.merge_contact_sync(&pending, &laptop, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(laptop_inbox.needs_resolution(peer.member_id()));
+    assert!(laptop_inbox.begin_introduction(peer.member_id(), &[78; 32], &laptop, &KEY, CONTEXT,
+        |_| panic!("sibling cannot replace first introduction")).is_err());
+    phone_inbox.resolve_introduction(peer.member_id(), cmsg::ContactResolutionKind::Answered,
+        &phone, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let resolved = phone_inbox.export_contact_sync(&phone).unwrap();
+    laptop_inbox.merge_contact_sync(&resolved, &laptop, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    laptop_inbox.merge_contact_sync(&pending, &laptop, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(!laptop_inbox.needs_resolution(peer.member_id()), "stale signed journal cannot reset resolution");
+    let mut issuer_only = Member::new().unwrap();
+    let mut forged = common::grant(&issuer_only.chat_public_key(), 1);
+    forged.member_id = owner.member_id().to_owned();
+    common::sign(&mut forged);
+    issuer_only.bind_admission(forged, common::trust(), 100).unwrap();
+    assert!(laptop_inbox.close_forever(peer.member_id(), &issuer_only, &KEY, CONTEXT,
+        |_| panic!("secure inbox cannot downgrade owner authentication")).is_err());
+}

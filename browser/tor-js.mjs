@@ -1,7 +1,9 @@
 import { OnionHttpTransport } from './internal/http.mjs';
 
 /**
- * Create an onion-only request/reply transport using TorJS 0.4.1. The caller
+ * Create an onion-only request/reply transport using the pinned onion-enabled
+ * TorJS build in upstream/. Stock TorJS 0.4.1 lacks the onion client feature.
+ * The caller
  * explicitly supplies gateway KPS addresses and a 1..60000ms request deadline.
  * This adapter neither hosts an onion service nor supplies offline delivery.
  * `init()` from the main cmsg module must have completed first.
@@ -16,6 +18,10 @@ export async function createTorJsOnionTransport({ gateway, deadlineMs, storage }
   // The local-file entrypoint keeps Tor's Wasm asset in the application's own
   // deployment. No Tor gateway, CDN fallback or operator address is selected.
   const { TorClient, Log } = await import('tor-js/wasm-file');
+  if (typeof TorClient.onionClientSupported !== 'function'
+      || !await TorClient.onionClientSupported()) {
+    throw new Error('cmsg:TorOnionSupportRequired');
+  }
   const client = new TorClient({
     gateway: [...gateways],
     storage,

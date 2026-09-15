@@ -65,6 +65,19 @@ impl ContactResolution {
             B64.encode(&Sha256::digest(&self.identity_credential)),
         ])).map_err(|_| Error::InvalidMessage)
     }
+
+    pub(crate) fn verify_device_signature(&self, verifier: &Member, at: u64) -> Result<(), Error> {
+        if self.identity_credential.len() > 8192 || verifier.verify_private_identity_credential(
+            &self.identity_credential, &self.device_public_key, at,
+        )? != self.responder_id {
+            return Err(Error::Admission);
+        }
+        let key: [u8; 32] = self.device_public_key.as_slice().try_into().map_err(|_| Error::Admission)?;
+        VerifyingKey::from_bytes(&key).map_err(|_| Error::Admission)?.verify_strict(
+            &zeroize::Zeroizing::new(self.signing_bytes()?),
+            &Signature::from_slice(&self.signature).map_err(|_| Error::Admission)?,
+        ).map_err(|_| Error::Admission)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -194,17 +207,10 @@ impl Member {
             || resolution.peer_id == resolution.responder_id
             || resolution.introduction_id != *introduction_id
             || resolution.issued_at == 0 || resolution.issued_at > now
-            || resolution.identity_credential.len() > 8192
-            || self.verify_private_identity_credential(&resolution.identity_credential,
-                &resolution.device_public_key, now)? != resolution.responder_id
         {
             return Err(Error::Admission);
         }
-        let key: [u8; 32] = resolution.device_public_key.as_slice().try_into().map_err(|_| Error::Admission)?;
-        VerifyingKey::from_bytes(&key).map_err(|_| Error::Admission)?.verify_strict(
-            &zeroize::Zeroizing::new(resolution.signing_bytes()?),
-            &Signature::from_slice(&resolution.signature).map_err(|_| Error::Admission)?,
-        ).map_err(|_| Error::Admission)
+        resolution.verify_device_signature(self, now)
     }
 
     /// Authorize only our current certified account, hashing the actual blinded
