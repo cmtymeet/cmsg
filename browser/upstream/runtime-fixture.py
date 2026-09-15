@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -115,18 +116,33 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
     exit_relay = dataclasses.replace(base, tag="e", relay=True, exit=True)
     client = dataclasses.replace(base, tag="c", client=True)
     network.addNodes(authority.getN(4) + relay.getN(20) + exit_relay.getN(2) + client.getN(1))
-    # Reserve all TCP port ranges together before configuring. The runner must
-    # serialize this fixture; Chutney releases reservations when Tor starts.
+    # Tor's outbound connections must not consume another node's listener port
+    # during sequential startup. Select outside the worker's ephemeral range;
+    # read kernel settings only and keep every reservation until launch.
+    ephemeral = [int(value) for value in
+        Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()]
+    if len(ephemeral) != 2 or not 1 <= ephemeral[0] <= ephemeral[1] <= 65535:
+        raise RuntimeError("invalid worker ephemeral port range")
+    unprivileged = max(1024, int(Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text()))
+    if not 1024 <= unprivileged <= 65535:
+        raise RuntimeError("invalid worker unprivileged port range")
+    intervals = [(unprivileged, ephemeral[0] - 1),
+                 (max(unprivileged, ephemeral[1] + 1), 65535)]
+    slots = [(low, high - low - 30) for low, high in intervals if high - low + 1 >= 32]
+    available_starts = sum(count for _, count in slots)
+    if available_starts == 0:
+        raise RuntimeError("no unprivileged Tor listener interval outside ephemeral ports")
     reservations = []
+    allocated_ports = {}
     for field in ["orport_base", "dirport_base", "controlport_base", "socksport_base",
                   "extorport_base", "ptport_base", "dnsport_base"]:
         for attempt in range(100):
-            probe = socket.socket()
-            probe.bind(("127.0.0.1", 0))
-            first = probe.getsockname()[1]
-            probe.close()
-            if first > 65000:
-                continue
+            choice = secrets.randbelow(available_starts)
+            for low, count in slots:
+                if choice < count:
+                    first = low + choice
+                    break
+                choice -= count
             group = []
             try:
                 for port in range(first, first + 32):
@@ -140,9 +156,14 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
                 continue
             reservations.extend(group)
             setattr(network, field, first)
+            allocated_ports[field] = [first, first + 31]
             break
         else:
-            raise RuntimeError("cannot reserve isolated Tor ports")
+            raise RuntimeError("cannot reserve isolated Tor ports outside ephemeral range")
+    (artifact / "listener-ports.json").write_text(json.dumps({
+        "synthetic": True, "ephemeral": ephemeral, "unprivilegedStart": unprivileged,
+        "reservedBlocks": allocated_ports,
+    }, indent=2) + "\n")
     gateway = None
     driver = None
     gateway_log = temporary / "gateway.log"
