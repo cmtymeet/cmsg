@@ -11,6 +11,26 @@ fn parse<T: DeserializeOwned>(json: &str) -> Result<T, JsValue> {
 fn encode<T: serde::Serialize>(value: &T) -> Result<String, JsValue> {
     serde_json::to_string(value).map_err(|_| js_error(Error::Admission))
 }
+fn fixed(bytes: &[u8]) -> Result<&[u8;32], JsValue> {
+    bytes.try_into().map_err(|_| js_error(Error::Admission))
+}
+
+#[wasm_bindgen]
+impl BrowserMember {
+    #[wasm_bindgen(js_name = authorizeAccountRequest)]
+    pub fn authorize_account_request(&self, request_id: &[u8], circuit_digest: &[u8], verifying_key_digest: &[u8],
+        statement_digest: &[u8], proof_digest: &[u8], issued_at: f64, expires_at: f64) -> Result<String, JsValue> {
+        encode(&self.member.authorize_account_request(fixed(request_id)?, fixed(circuit_digest)?, fixed(verifying_key_digest)?,
+            fixed(statement_digest)?, fixed(proof_digest)?, timestamp(issued_at)?, timestamp(expires_at)?).map_err(js_error)?)
+    }
+    #[wasm_bindgen(js_name = delegateAccountingPublicKey)]
+    pub fn delegate_accounting_public_key(&self, public_key: &[u8], hash_scheme: &str,
+        state_secret_commitment: &[u8], expires_at: f64) -> Result<String, JsValue> {
+        let public = public_key.try_into().map_err(|_| js_error(Error::Admission))?;
+        encode(&self.member.delegate_accounting_public_key(public, hash_scheme, fixed(state_secret_commitment)?,
+            timestamp(expires_at)?).map_err(js_error)?)
+    }
+}
 
 /// Independent P-256 signer. Its secret has only an encrypted recovery export.
 #[wasm_bindgen]
@@ -41,7 +61,6 @@ impl BrowserInbox {
     #[wasm_bindgen(js_name = authorizeAccountRequest)]
     pub fn authorize_account_request(&self, request_id: &[u8], circuit_digest: &[u8], verifying_key_digest: &[u8],
         statement_digest: &[u8], proof_digest: &[u8], issued_at: f64, expires_at: f64) -> Result<String, JsValue> {
-        fn fixed(bytes: &[u8]) -> Result<&[u8;32], JsValue> { bytes.try_into().map_err(|_| js_error(Error::Admission)) }
         encode(&self.member.authorize_account_request(fixed(request_id)?, fixed(circuit_digest)?, fixed(verifying_key_digest)?,
             fixed(statement_digest)?, fixed(proof_digest)?, timestamp(issued_at)?, timestamp(expires_at)?).map_err(js_error)?)
     }

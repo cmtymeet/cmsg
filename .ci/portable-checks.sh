@@ -33,10 +33,12 @@ if test "${CHECK_SUITE:-core}" = browser; then
     "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg cmsg
   export BROWSER_BIN BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
   timeout 300 node .ci/browser-check.mjs || result=$?
+  cargo fmt --all
+  tar --create --file "$artifact_dir/formatted-browser-source.tar" src/browser_accounting.rs
   tar --create --file "$artifact_dir/browser-package.tar" browser/pkg browser/index.mjs browser/package.json
   (
     cd "$artifact_dir"
-    sha256sum Cargo.lock browser-helper-Cargo.lock browser-package.tar > SHA256SUMS
+    sha256sum Cargo.lock browser-helper-Cargo.lock browser-package.tar formatted-browser-source.tar > SHA256SUMS
     if test -f browser-evidence.json; then sha256sum browser-evidence.json >> SHA256SUMS; fi
   )
   exit "$result"

@@ -6,7 +6,7 @@ import {
 import { OnionHttpTransport } from './internal/http.mjs';
 import { OnionFramedStream } from './internal/streams.mjs';
 import { runTorNodeContract } from './tor-node-contract.mjs';
-import { runAccountingContract } from './accounting-contract.mjs';
+import { runAccountingContract, runAccountingMemberContract } from './accounting-contract.mjs';
 
 function assert(condition, label) {
   if (!condition) throw new Error(`browser contract: ${label}`);
@@ -126,6 +126,7 @@ export async function runBrowserContract() {
   const issuer = await authority();
   const alice = await member(issuer);
   const bob = await member(issuer);
+  await runAccountingMemberContract(alice.member, alice.identity.memberId(), issuer.trust);
   alice.member.createGroup();
   const invitation = alice.member.add(bob.member.keyPackage());
   bob.member.join(invitation.welcome);

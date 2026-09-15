@@ -1182,11 +1182,18 @@ fn credential_grant(credential: &Credential) -> Result<AdmissionGrant, Error> {
 }
 
 pub(crate) fn verify_bound_identity_bytes(
-    bytes: &[u8], key: &[u8], trust: &AdmissionTrust, at: u64,
+    bytes: &[u8],
+    key: &[u8],
+    trust: &AdmissionTrust,
+    at: u64,
 ) -> Result<String, Error> {
-    if bytes.len() > 8192 { return Err(Error::Admission); }
+    if bytes.len() > 8192 {
+        return Err(Error::Admission);
+    }
     let credential: Credential = BasicCredential::new(bytes.to_vec()).into();
-    if credential_parts(&credential)?.1.is_none() { return Err(Error::Admission); }
+    if credential_parts(&credential)?.1.is_none() {
+        return Err(Error::Admission);
+    }
     verify_credential(&credential, key, trust, at)
 }
 

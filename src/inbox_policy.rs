@@ -36,7 +36,9 @@ fn expired_for(block: &ContactDirective, initiative: Option<&ContactDirective>) 
 
 impl DirectionalContact {
     pub(super) fn accounting_tips(&self) -> Result<([u8; 32], [u8; 32]), Error> {
-        if self.conflict { return Err(Error::InvalidState); }
+        if self.conflict {
+            return Err(Error::InvalidState);
+        }
         Ok((tip(&self.local)?, tip(&self.peer)?))
     }
     pub(super) fn blocked(&self) -> bool {

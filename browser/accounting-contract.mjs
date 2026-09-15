@@ -28,6 +28,25 @@ async function sign(key, transcript) {
   if (s > order / 2n) bytes.set(unhex((order - s).toString(16).padStart(64, '0')), 32);
   return [...bytes];
 }
+export async function runAccountingMemberContract(member, memberId, trust) {
+  const key = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const publicBytes = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey)).subarray(1);
+  const now = Math.floor(Date.now() / 1000), expires = now + 120;
+  const delegation = member.delegateAccountingPublicKey(publicBytes, scheme, new Uint8Array(32).fill(2), expires);
+  verifyAccountingDelegation(delegation, JSON.stringify(trust), Math.floor(Date.now() / 1000));
+  check(JSON.parse(delegation).admission.memberId === memberId, 'ungrouped Member delegation binds owner');
+  const fields = [1, 2, 3, 4, 5].map(value => new Uint8Array(32).fill(value));
+  const request = JSON.parse(member.authorizeAccountRequest(...fields, now, expires));
+  const integer = value => { const bytes = new Uint8Array(8); new DataView(bytes.buffer).setBigUint64(0, BigInt(value)); return bytes; };
+  const transcript = new Uint8Array([
+    ...new TextEncoder().encode('cfrm.account.request.v1\0'), ...fields[0], ...fields[1], ...fields[2],
+    ...member.chatPublicKey(), ...integer(now), ...integer(expires), ...fields[3], ...fields[4],
+  ]);
+  const signature = Uint8Array.from(atob(request.signature.replaceAll('-', '+').replaceAll('_', '/')), char => char.charCodeAt(0));
+  const device = await crypto.subtle.importKey('raw', member.chatPublicKey(), 'Ed25519', false, ['verify']);
+  check(await crypto.subtle.verify('Ed25519', device, signature, transcript), 'ungrouped Member request verifies independently in WebCrypto');
+  fails(() => member.authorizeAccountRequest(new Uint8Array(31), ...fields.slice(1), now, expires), 'Member request bounds');
+}
 export async function runAccountingContract({ sender, recipient, senderId, recipientId, trust, receiveAnswer }) {
   const now = Math.floor(Date.now() / 1000), trustJson = JSON.stringify(trust);
   const at = () => Math.floor(Date.now() / 1000);

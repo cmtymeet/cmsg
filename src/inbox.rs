@@ -11,10 +11,10 @@ use zeroize::{Zeroize, Zeroizing};
 #[path = "inbox_policy.rs"]
 mod owner_policy;
 use owner_policy::DirectionalContact;
-#[path = "inbox_replacement.rs"]
-mod replacement_policy;
 #[path = "inbox_accounting.rs"]
 mod accounting_policy;
+#[path = "inbox_replacement.rs"]
+mod replacement_policy;
 use replacement_policy::PendingReplacement;
 pub use replacement_policy::{ReopeningInvitation, ReplacementPreview};
 
@@ -168,7 +168,9 @@ impl Drop for Introduction {
         }
         if let Some(strict) = &mut self.strict {
             strict.initial_writer_key.zeroize();
-            if let Some(group) = &mut strict.accounting_group_id { group.zeroize(); }
+            if let Some(group) = &mut strict.accounting_group_id {
+                group.zeroize();
+            }
         }
     }
 }
@@ -1604,7 +1606,10 @@ impl Inbox {
                     || strict.policy.response_deadline > 9_007_199_254_740_991
                     || strict.policy.max_intro_bytes == 0
                     || strict.policy.max_intro_bytes > crate::MAX_DATA_BYTES
-                    || strict.accounting_group_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 256)
+                    || strict
+                        .accounting_group_id
+                        .as_ref()
+                        .is_some_and(|id| id.is_empty() || id.len() > 256)
                     || (introduction.decision == Some(ContactResolutionKind::Answered)
                         && (!strict.sent || !strict.received))
                 {
