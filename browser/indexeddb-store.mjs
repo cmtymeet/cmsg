@@ -48,6 +48,7 @@ export async function openIndexedDbInboxStore(name) {
           catch { reject(invalid()); return; }
           transaction.oncomplete = () => resolve(true);
           transaction.onabort = () => reject(stale ? conflict() : invalid());
+          if (transaction.durability !== 'strict') { transaction.abort(); return; }
           const records = transaction.objectStore('sessions');
           const previous = records.get(id);
           previous.onsuccess = () => {

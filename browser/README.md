@@ -67,6 +67,10 @@ publish successors. On conflict, reload the stored checkpoint before retrying.
 A missing row accepts only version zero: deleting storage cannot silently import
 an older nonzero chain. `read(localInboxId)` returns the stored record, and
 `close()` closes the database without deleting its contents.
+The stored `outbound` array belongs to that latest publication; it is not an
+accumulating queue. Send returned frames while their live session permits it,
+and use the Inbox's retained control journal for control recovery. An embedding
+that adds a separate queue must atomically apply cancellation metadata too.
 
 Alternative hosts must implement the same atomic version check and commit
 contract. cmsg never treats a synchronous return, missing return or rejected
