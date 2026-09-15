@@ -17,7 +17,7 @@ const server = createServer(async (request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     if (pathname === '/') {
       response.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
-      response.end('<!doctype html><meta charset="utf-8"><title>cmsg browser contract</title>');
+      response.end('<!doctype html><meta charset="utf-8"><title>cmsg browser contract</title><script type="importmap">{"imports":{"tor-js/wasm-file":"/browser/fixtures/tor-js.mjs"}}</script>');
       return;
     }
     const file = resolve(root, '.' + decodeURIComponent(pathname));

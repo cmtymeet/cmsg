@@ -5,6 +5,7 @@ import {
 } from './index.mjs';
 import { OnionHttpTransport } from './internal/http.mjs';
 import { OnionFramedStream } from './internal/streams.mjs';
+import { runTorNodeContract } from './tor-node-contract.mjs';
 
 function assert(condition, label) {
   if (!condition) throw new Error(`browser contract: ${label}`);
@@ -490,6 +491,7 @@ export async function runBrowserContract() {
   await rejects(() => invalidRaw.receive(), 'invalid raw frame');
   assert(invalidRaw.closed, 'invalid raw frame poisons stream');
   passed.push('scripted raw-stream boundary: native framing, fragmentation, coalescing, EOF and invalid-frame closure');
+  passed.push(...await runTorNodeContract());
 
   bob.member.free();
   alice.identity.free();
