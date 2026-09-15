@@ -1,11 +1,12 @@
 // Browser-only behavioral checks against the generated Wasm JavaScript API.
 // Scripted transport cases exercise adapter failure boundaries, not Tor.
 import {
-  init, BrowserFrameCodec, BrowserIdentity, BrowserMember, BrowserInbox, BrowserOnionEndpoint,
+  init, BrowserFrameCodec, BrowserIdentity, BrowserMember, BrowserInbox, BrowserOnionEndpoint, openIndexedDbInboxStore,
 } from './index.mjs';
 import { OnionHttpTransport } from './internal/http.mjs';
 import { OnionFramedStream } from './internal/streams.mjs';
 import { runTorNodeContract } from './tor-node-contract.mjs';
+import { runLiveStreamContract } from './live-contract.mjs';
 import { runAccountingContract, runAccountingMemberContract } from './accounting-contract.mjs';
 
 function assert(condition, label) {
@@ -97,27 +98,10 @@ function response(bytes) {
 }
 
 async function checkpointStore() {
-  const name = `cmsg-contract-${crypto.randomUUID()}`;
-  const db = await new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('sessions');
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(new Error('fixture database open'));
-  });
-  return {
-    persist: (id) => (checkpoint, outbound, metadata) => new Promise((resolve, reject) => {
-      const transaction = db.transaction('sessions', 'readwrite', { durability: 'strict' });
-      transaction.objectStore('sessions').put({ checkpoint, outbound, metadata }, id);
-      transaction.oncomplete = () => resolve(true);
-      transaction.onabort = transaction.onerror = () => reject(new Error('fixture database write'));
-    }),
-    read: (id) => new Promise((resolve, reject) => {
-      const request = db.transaction('sessions').objectStore('sessions').get(id);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(new Error('fixture database read'));
-    }),
-    close: () => { db.close(); indexedDB.deleteDatabase(name); },
-  };
+  const name=`cmsg-contract-${crypto.randomUUID()}`;
+  const first=await openIndexedDbInboxStore(name),second=await openIndexedDbInboxStore(name);
+  return {persist:first.persist,read:first.read,secondPersist:second.persist,
+    close(){first.close();second.close();indexedDB.deleteDatabase(name);}};
 }
 
 async function liveControls(from,to,key,context,saveFrom,saveTo) {
@@ -336,7 +320,8 @@ export async function runBrowserContract() {
   const recipientReplacementKey = recipientReplacement.member.chatPublicKey();
   const replacementPackage = senderReplacement.member.keyPackage();
   await store.persist('replacement-member')(
-    senderReplacement.member.snapshot(sessionKey, sessionContext), [replacementPackage]);
+    senderReplacement.member.snapshot(sessionKey, sessionContext), [replacementPackage],
+    {expectedVersion:0,nextVersion:1,devicePublicKey:[...senderReplacementKey]});
   const replacementNonce = crypto.getRandomValues(new Uint8Array(32));
   const replacementDeadline = Math.floor(Date.now() / 1000) + 300;
   await rejects(() => recipientInbox.initiateReplacement(recipientReplacement.member,
@@ -413,6 +398,16 @@ export async function runBrowserContract() {
   assert(sameBytes(replacementAnswered.bytes, binary), 'replacement group exchanges authentic answer');
   replacementAnswered.free();
   await liveControls(recipientInbox,senderInbox,sessionKey,sessionContext,saveRecipient,saveSender);
+  const staleWriter=BrowserInbox.restore((await store.read('sender')).checkpoint,sessionKey,sessionContext);
+  const competing=await Promise.allSettled([
+    senderInbox.clearLiveControls(sessionKey,sessionContext,saveSender),
+    staleWriter.beginLiveSession(recipientInbox.chatPublicKey(),Math.floor(Date.now()/1000)+60,sessionKey,sessionContext,store.secondPersist('sender')),
+  ]);
+  assert(competing.filter(r=>r.status==='fulfilled').length===1,'two IndexedDB connections accept only one device writer');
+  if(competing[0].status==='rejected'){senderInbox.free();senderInbox=staleWriter;}else{staleWriter.free();}
+  const currentRecord=await store.read('sender');
+  await rejects(()=>store.secondPersist('absent-row')(currentRecord.checkpoint,[],{...currentRecord.metadata,expectedVersion:currentRecord.version,nextVersion:currentRecord.version+1}),'missing row cannot import a later publication chain');
+  await liveHandshake(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
   const pendingLive=await senderInbox.sendBytes(binary,sessionKey,sessionContext,saveSender);
   const savedLive=await store.read('sender');
   assert(savedLive.metadata.entries[0].kind==='application','atomic outbox identifies live application');
@@ -430,6 +425,8 @@ export async function runBrowserContract() {
   await liveHandshake(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
   await rejects(()=>recipientInbox.receive(pendingLive,sessionKey,sessionContext,saveRecipient),'old session frame rejected after fresh handshake');
   passed.push('generated Wasm + IndexedDB: fresh live sessions, atomic cancellation, lost ACK recovery and no restored application replay');
+  await runLiveStreamContract(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
+  passed.push('actual Wasm with scripted framed I/O: live adapter acceptance, close during pending write, cancellation and member independence');
   senderReplacement.member.free(); recipientReplacement.member.free();
   passed.push('generated JS API + IndexedDB: fresh-admission replacement group, durable handle transfer, exact restored pending retry and one-introduction gate');
   senderInbox.free(); recipientInbox.free(); sender.identity.free(); recipient.identity.free();

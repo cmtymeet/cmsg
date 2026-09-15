@@ -16,7 +16,7 @@ are offline. Abrupt loss creates no member block or automatic Close.
 
 The receiver persists accepted plaintext history and its signed ACK before
 exposing plaintext. Outgoing pending records retain digests, not queued payload.
-An outgoing Answer becomes an accepted decision only after the original sender's
+An outgoing Answer becomes an accepted decision only before the response deadline, after the original sender's
 ACK reaches the recipient. A canceled queued Answer leaves Close available.
 `CanceledUnconfirmed` means delivery is unknown: an authentic later ACK may
 record acceptance, but never reopen a closed contact. Neither transport writes
@@ -29,7 +29,7 @@ IDs and canceled application IDs. Purge canceled app outbox entries; check
 `canTransmitLiveWire` before any write. On restore all live application send
 permissions are canceled even if the external outbox survived. Control recovery
 uses retained signed evidence and `retransmitLiveAck`; it does not consume a new
-introduction. Signed sibling sync retains authenticated accepted history and
+introduction. Silence at the live response deadline cancels delivery eligibility and keeps the obligation; it signs no Close and creates no member block. Explicit Close remains available afterward. Signed sibling sync retains authenticated accepted history and
 monotonic cancellation without transferring live socket permissions.
 
 A full rollback of every replica and externally saved ciphertext cannot be

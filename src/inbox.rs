@@ -154,6 +154,8 @@ struct StrictIntroduction {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InboxState {
+    #[serde(default)]
+    publication_version:u64,
     community_id: String,
     recipient_id: String,
     root_authorized: bool,
@@ -244,6 +246,7 @@ impl Inbox {
     pub fn new(recipient: &Member) -> Result<Self, Error> {
         Ok(Self {
             state: InboxState {
+                publication_version:0,
                 community_id: recipient
                     .trust
                     .as_ref()
@@ -662,6 +665,15 @@ impl Inbox {
             .collect();
         let mut changed = self.duplicate();
         let ended=changed.expire_live_sessions(now);
+        if self.state.live.is_some() || self.state.reservations.is_some() {
+            let mut expired_count=0;
+            for peer in &expired {
+                let nonce=changed.state.introductions.get(peer).ok_or(Error::InvalidState)?.id;
+                expired_count+=usize::from(changed.expire_live_introduction(peer,&nonce));
+            }
+            if ended+expired_count>0 {persist(&changed.seal(member,key,context)?)?;*self=changed;}
+            return Ok(ended+expired_count);
+        }
         if expired.is_empty() && ended==0 { return Ok(0); }
         for peer in &expired {
             let intro = changed
@@ -839,6 +851,7 @@ impl Inbox {
                 )?
             }
             Received::MembershipChanged => {
+                changed.check_reservation_roster(&candidate)?;
                 if peer_excluded {
                     let before: BTreeSet<_> = member
                         .participants()?
@@ -1314,6 +1327,7 @@ impl Inbox {
             .map_err(|_| Error::Admission)?;
         let incoming_state = Self {
             state: InboxState {
+                publication_version:0,
                 community_id: sync.community_id.clone(),
                 recipient_id: sync.owner_id.clone(),
                 root_authorized: true,
@@ -1588,6 +1602,7 @@ impl Inbox {
 
     fn validate_state(&self, member: &Member) -> Result<(), Error> {
         self.check_binding(member)?;
+        if self.state.publication_version>9_007_199_254_740_991 {return Err(Error::InvalidStore);}
         if let Some(journal)=&self.state.live {journal.validate(member,&self.state.recipient_id)?;}
         if let Some(journal)=&self.state.reservations {journal.validate(&self.state.recipient_id,&self.state.community_id)?;}
         if self
@@ -1770,6 +1785,11 @@ impl Inbox {
     }
 
     /// Export one encrypted checkpoint containing both policy and MLS state.
+    pub fn publication_version(&self)->u64 {self.state.publication_version}
+    pub(crate) fn advance_publication(&mut self,expected:u64)->Result<u64,Error> {
+        if self.state.publication_version!=expected || expected>=9_007_199_254_740_991 {return Err(Error::InvalidStore);}
+        self.state.publication_version=expected+1;Ok(expected+1)
+    }
     pub fn snapshot(
         &self,
         member: &Member,

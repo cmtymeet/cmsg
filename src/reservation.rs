@@ -27,7 +27,7 @@ pub struct ReservationContexts {pub outgoing:ReservationContext,pub incoming:Res
 pub struct VerifiedReservation {
     #[serde(flatten)] pub expected:ReservationExpectation,
     pub account_policy_digest:[u8;32], pub state_version:u64, pub state_commitment:[u8;32],
-    pub presentation_binding:[u8;32],
+    pub presentation_binding:[u8;32], pub owner_authority:[u8;32],
 }
 /// Implemented by a trusted embedding, never by interpreting a peer's boolean.
 /// Both methods must verify the actual proof under pinned circuit/VK and the

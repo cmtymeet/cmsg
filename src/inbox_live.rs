@@ -25,6 +25,7 @@ struct Control { session:[u8;32], wire:Vec<u8> }
 pub(super) struct Journal {
     sessions:BTreeMap<String,Session>,deliveries:BTreeMap<String,Record>,
     controls:Vec<Control>,
+    #[serde(default)] expired:BTreeSet<String>,
 }
 impl Journal {
     fn cancel(&mut self,session:&str) {
@@ -82,6 +83,7 @@ impl Journal {
         Ok(())
     }
     pub(super) fn merge(&mut self,other:&Self)->Result<(),Error> {
+        self.expired.extend(other.expired.iter().cloned());
         for (id,incoming) in &other.sessions {
             if let Some(local)=self.sessions.get_mut(id) {
                 if local.local.digest()?!=incoming.local.digest()? || local.peer.digest()?!=incoming.peer.digest()? {return Err(Error::InvalidStore);}
@@ -122,7 +124,9 @@ impl Inbox {
     pub fn live_deliveries(&self)->Vec<LiveDelivery> {
         self.state.live.as_ref().map(|j|j.deliveries.values().map(|r|{
             let mut summary=r.summary.clone();
-            if summary.outgoing && summary.status==DeliveryStatus::Pending && !self.runtime.ready.contains(&live::id(&summary.session_id)) {
+            if summary.outgoing && summary.status==DeliveryStatus::Pending && (!self.runtime.ready.contains(&live::id(&summary.session_id))
+                || j.sessions.get(&live::id(&summary.session_id)).is_none_or(|s|s.ended || self.is_blocked(&s.peer.owner)
+                    || self.state.introductions.get(&s.peer.owner).map(|i|i.id)!=Some(s.local.introduction))) {
                 summary.status=DeliveryStatus::CanceledUnconfirmed;
             } summary
         }).collect()).unwrap_or_default()
@@ -212,6 +216,12 @@ impl Inbox {
         for id in old {changed.retire_live(&id);}
         persist(&changed.seal(&candidate,key,context)?,&wire)?;*member=candidate;*self=changed;Ok(wire)
     }
+    pub(super) fn expire_live_introduction(&mut self,peer:&str,nonce:&[u8;32])->bool {
+        let Some(journal)=&mut self.state.live else {return false};
+        let inserted=journal.expired.insert(live::id(nonce));
+        let ids:Vec<_>=journal.sessions.iter().filter(|(_,s)|s.peer.owner==peer && s.local.introduction==*nonce).map(|(id,_)|id.clone()).collect();
+        for id in ids {self.retire_live(&id);}inserted
+    }
     pub(super) fn expire_live_sessions(&mut self,now:u64)->usize {
         let ids:Vec<_>=self.state.live.as_ref().map(|j|j.sessions.iter().filter(|(_,s)|!s.ended &&
             matches!((&s.local.body,&s.peer.body),(Body::Hello {until:a,..},Body::Hello {until:b,..}) if now>=*a || now>=*b))
@@ -263,6 +273,8 @@ impl Inbox {
         let sid=match selected {Some(id)=>{self.session_ready(id,member)?;*id},None=>self.live_sessions().into_iter().find(|id|self.session_ready(id,member).is_ok()).ok_or(Error::Admission)?};
         let intro=self.state.introductions.get(&peer).ok_or(Error::InvalidState)?;
         let strict=intro.strict.as_ref().ok_or(Error::InvalidState)?;
+        if intro.decision.is_none() && (member.authorization_time()?>=strict.policy.response_deadline
+            || self.state.live.as_ref().unwrap().expired.contains(&live::id(&intro.id))) {return Err(Error::Admission);}
         if intro.decision.is_none() && (bytes.len()>strict.policy.max_intro_bytes || match strict.role {
             FirstContactRole::Initiator=>strict.sent || strict.initial_writer_key!=member.chat_public_key(),
             FirstContactRole::Recipient=>!strict.received || self.state.live.as_ref().unwrap().deliveries.values().any(|r|
@@ -325,6 +337,7 @@ impl Inbox {
                 let entry=self.state.introductions.get_mut(peer).ok_or(Error::InvalidState)?;
                 let strict=entry.strict.as_mut().ok_or(Error::InvalidState)?;
                 if entry.decision.is_none() {
+                    if now>=strict.policy.response_deadline || self.state.live.as_ref().unwrap().expired.contains(&live::id(&entry.id)) {return Err(Error::Admission);}
                     if payload.len()>strict.policy.max_intro_bytes || match strict.role {
                         FirstContactRole::Recipient=>strict.received,FirstContactRole::Initiator=>!strict.sent,
                     } {return Err(Error::Admission);}
@@ -350,7 +363,9 @@ impl Inbox {
                     || envelope.issued_at<record.issued_at {return Err(Error::Admission);}
                 record.summary.status=DeliveryStatus::Accepted;record.ack=Some(envelope.clone());
                 if let Some(entry)=self.state.introductions.get_mut(peer) {
-                    if entry.id==record.introduction && entry.decision.is_none() {
+                    if entry.id==record.introduction && entry.decision.is_none()
+                        && entry.strict.as_ref().is_some_and(|s|now<s.policy.response_deadline)
+                        && !journal.expired.contains(&live::id(&entry.id)) {
                         if let Some(resolution)=&record.resolution {entry.decision=Some(ContactResolutionKind::Answered);entry.outbound_receipt=Some(resolution.clone());}
                     }
                 }

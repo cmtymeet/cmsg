@@ -165,7 +165,8 @@ fn bound_original(state: &State, d: &AccountingDelegation) -> Result<()> {
 fn send_intro(state:&mut State)->Result<()> {
     let storage=state.bridge.clone();
     let wire=core(state.pair.ai.send_contact(&mut state.pair.a,b"introduction",&KEY,CONTEXT,|checkpoint,_|match &storage {Some(s)=>s.save(0,checkpoint),None=>Ok(())}))?;
-    core(state.pair.bi.receive_contact(&mut state.pair.b,&wire,&KEY,CONTEXT,|checkpoint|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;Ok(())
+    core(state.pair.bi.receive_contact(&mut state.pair.b,&wire,&KEY,CONTEXT,|checkpoint|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;
+    if let Some(bridge)=&storage {bridge.flush(&mut state.pair)?;}Ok(())
 }
 fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     if let Request::Enroll { keys, peer_expires } = request {
@@ -221,13 +222,15 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
                 return Err("fixture scenario already used");
             }
             send_intro(state)?;
-            let wire = state.pair.send_answer();
+            let storage=state.bridge.clone();
+            let wire=core(state.pair.bi.send_contact(&mut state.pair.b,b"answer",&KEY,CONTEXT,|checkpoint,_|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;
             core(
                 state
                     .pair
                     .ai
                     .receive_contact(&mut state.pair.a, &wire, &KEY, CONTEXT, |_| Ok(())),
             )?;
+            if let Some(bridge)=&state.bridge {bridge.flush(&mut state.pair)?;}
             state.phase = 1;
             let receipt = core(state.pair.bi.prepare_accounting_receipt(
                 state.pair.ar.member_id(),

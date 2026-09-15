@@ -6,7 +6,7 @@ struct Verifier {bad_role:bool,local_current:bool}
 impl ReservationVerifier for Verifier {
  fn verify_remote(&mut self,_:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {
   let mut expected=c.expected.clone();if self.bad_role {expected.phase=1;}
-  Ok(VerifiedReservation {expected,account_policy_digest:[7;32],state_version:3,state_commitment:[8;32],presentation_binding:[9;32]})
+  Ok(VerifiedReservation {expected,account_policy_digest:[7;32],state_version:3,state_commitment:[8;32],presentation_binding:[9;32],owner_authority:[10;32]})
  }
  fn verify_current_local(&mut self,e:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {if !self.local_current {return Err(Error::Admission);}self.verify_remote(e,c)}
 }
@@ -53,4 +53,22 @@ fn restore_close_and_reopening_keep_old_proofs_from_reauthorizing_another_contac
  p.ai.receive_contact(&mut p.a,&fresh,&KEY,CONTEXT,|_|Ok(())).unwrap();
  assert!(p.ai.reservation_contexts(&p.a).is_err());
  assert!(p.bi.send_contact(&mut p.b,b"fresh but unpaid",&KEY,CONTEXT,|_,_|panic!("new nonce needs new matched reservations")).is_err());
+}
+#[test]
+fn pending_accounted_contact_is_bound_to_one_recipient_device_and_roster() {
+ let mut p=Pair::configured(10_000);configure(&mut p);
+ let mut sibling=common::accounting::device(&p.br,&p.time,10_000);
+ let incoming=p.bi.export_contact_sync(&p.b).unwrap();
+ let mut sibling_inbox=cmsg::Inbox::new_accounted(&sibling).unwrap();
+ sibling_inbox.merge_contact_sync(&incoming,&sibling,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ let mut v=Verifier {bad_role:false,local_current:true};
+ assert!(sibling_inbox.bind_active_reservations(&sibling,b"a",b"b",&mut v,&KEY,CONTEXT,|_|panic!("sibling cannot become designated recipient")).is_err());
+ let mut staged=cmsg::Member::restore_with_clock(&p.a.snapshot(&KEY,CONTEXT).unwrap(),&KEY,CONTEXT,p.time.clone()).unwrap();
+ staged.add(&sibling.key_package().unwrap()).unwrap();
+ assert!(p.ai.check_group(&staged).is_err(),"pending first payload roster cannot expand");
+ p.bi.authorize_incoming_reservation(&p.b,b"a",&mut v,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut v,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.bi.bind_active_reservations(&p.b,b"a",b"b",&mut v,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.send_intro();let answer=p.send_answer();p.ai.receive_contact(&mut p.a,&answer,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ assert!(p.ai.check_group(&staged).is_ok(),"established roster may add independent devices");
 }

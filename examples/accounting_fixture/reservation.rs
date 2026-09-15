@@ -24,12 +24,30 @@ impl Bridge {
   for name in ["newcomerAdmissions","maximumAdmissions"] {bytes.extend_from_slice(&u32::try_from(number(p,name)?).map_err(|_|"policy bound")?.to_be_bytes());}
   bytes.extend_from_slice(&number(p,"refillPeriod")?.to_be_bytes());bytes.extend_from_slice(&u32::try_from(number(p,"refillUnits")?).map_err(|_|"policy bound")?.to_be_bytes());
   let abandon=number(p,"abandonAfter")?;bytes.extend_from_slice(&abandon.to_be_bytes());bytes.push(32);
+  // The composed fixture uses the actual live Inbox gate. No application is
+  // generated during this handshake or before the two Active proofs bind.
+  pair.ai=core(cmsg::Inbox::new_live(&pair.a))?;pair.bi=core(cmsg::Inbox::new_live(&pair.b))?;
+  let contact_policy=cmsg::FirstContactPolicy {response_deadline:5000,max_intro_bytes:128};
+  core(pair.ai.begin_first_contact(pair.br.member_id(),&[84;32],cmsg::FirstContactRole::Initiator,contact_policy,&pair.a,&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;
+  core(pair.bi.begin_first_contact(pair.ar.member_id(),&[84;32],cmsg::FirstContactRole::Recipient,contact_policy,&pair.b,&KEY,CONTEXT,|checkpoint|bridge.save(1,checkpoint)))?;
+  let until=pair.time.0.load(Ordering::Relaxed).checked_add(abandon).ok_or("lease overflow")?;
+  let ah=core(pair.ai.begin_live_session(&mut pair.a,&pair.b.chat_public_key(),until,&KEY,CONTEXT,|checkpoint,_|bridge.save(0,checkpoint)))?;
+  let bh=core(pair.bi.begin_live_session(&mut pair.b,&pair.a.chat_public_key(),until,&KEY,CONTEXT,|checkpoint,_|bridge.save(1,checkpoint)))?;
+  core(pair.ai.receive_contact(&mut pair.a,&bh,&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;
+  core(pair.bi.receive_contact(&mut pair.b,&ah,&KEY,CONTEXT,|checkpoint|bridge.save(1,checkpoint)))?;
+  bridge.flush(pair)?;
   let policy=ReservationPolicy {account_policy_digest:Sha256::digest(&bytes).into(),opened_at:pair.time.0.load(Ordering::Relaxed),abandon_after:abandon};
   let a=core(pair.ai.require_active_reservations(&pair.a,policy.clone(),&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;
   let b=core(pair.bi.require_active_reservations(&pair.b,policy,&KEY,CONTEXT,|checkpoint|bridge.save(1,checkpoint)))?;
   core(pair.ai.set_own_reservation_challenge(&pair.a,&b.outgoing.expected.challenge,&KEY,CONTEXT,|checkpoint|bridge.save(0,checkpoint)))?;
   core(pair.bi.set_own_reservation_challenge(&pair.b,&a.incoming.expected.challenge,&KEY,CONTEXT,|checkpoint|bridge.save(1,checkpoint)))?;
   Ok(Some(bridge))
+ }
+ pub(super) fn flush(&self,pair:&mut Pair)->Result<()> {
+  for wire in pair.ai.pending_live_controls() {core(pair.bi.receive_contact(&mut pair.b,&wire,&KEY,CONTEXT,|checkpoint|self.save(1,checkpoint)))?;}
+  core(pair.ai.clear_live_controls(&pair.a,&KEY,CONTEXT,|checkpoint|self.save(0,checkpoint)))?;
+  for wire in pair.bi.pending_live_controls() {core(pair.ai.receive_contact(&mut pair.a,&wire,&KEY,CONTEXT,|checkpoint|self.save(0,checkpoint)))?;}
+  core(pair.bi.clear_live_controls(&pair.b,&KEY,CONTEXT,|checkpoint|self.save(1,checkpoint)))?;Ok(())
  }
  pub(super) fn save(&self,owner:usize,bytes:&[u8])->std::result::Result<(),cmsg::Error> {
   let final_path=self.directory.join(format!("owner{owner}.sealed"));let temporary=self.directory.join(format!("owner{owner}.next"));

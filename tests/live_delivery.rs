@@ -142,3 +142,18 @@ fn losing_one_device_session_keeps_another_authenticated_device_live() {
     p.ai.merge_contact_sync(&stale,&p.a,&KEY,CONTEXT,|_|Ok(())).unwrap();
     assert!(p.ai.live_sessions().is_empty());assert!(!p.ai.can_transmit_live_wire(&intro,&p.a).unwrap());
 }
+#[test]
+fn silence_at_response_deadline_never_fabricates_close_or_refund_evidence() {
+ let mut p=configured();handshake(&mut p);p.send_intro();
+ p.time.0.store(5000,std::sync::atomic::Ordering::Relaxed);
+ p.ai.apply_deadlines(&p.a,&KEY,CONTEXT,|_|Ok(())).unwrap();p.bi.apply_deadlines(&p.b,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ assert!(!p.ai.is_closed(p.br.member_id()) && !p.bi.is_closed(p.ar.member_id()));
+ assert!(p.ai.awaiting_peer_resolution(p.br.member_id()) && p.bi.needs_resolution(p.ar.member_id()));
+ assert!(p.bi.outbound_resolution_receipt(p.ar.member_id()).is_none());
+ assert!(p.ai.outbound_resolution_receipt(p.br.member_id()).is_none());
+ assert!(p.bi.accounting_receipt(p.ar.member_id(),&p.b,&p.bk,&p.bd).is_err());
+ assert!(p.bi.send_contact(&mut p.b,b"late Answer",&KEY,CONTEXT,|_,_|panic!("expired contact cannot answer")).is_err());
+ p.bi.close_contact(&mut p.b,&KEY,CONTEXT,|_,_|Ok(())).unwrap();
+ assert!(p.bi.is_closed(p.ar.member_id()),"explicit owner Close remains possible after expiry");
+ assert!(p.bi.accounting_receipt(p.ar.member_id(),&p.b,&p.bk,&p.bd).is_ok());
+}

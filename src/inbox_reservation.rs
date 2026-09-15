@@ -40,7 +40,7 @@ impl Journal {
 }
 fn check(value:&VerifiedReservation,expected:&ReservationExpectation,policy:&ReservationPolicy)->Result<(),Error> {
     if &value.expected!=expected || value.account_policy_digest!=policy.account_policy_digest || value.state_version==0
-        || value.state_version>9_007_199_254_740_991 || value.state_commitment==[0;32] || value.presentation_binding==[0;32] {return Err(Error::Admission);}Ok(())
+        || value.state_version>9_007_199_254_740_991 || value.state_commitment==[0;32] || value.presentation_binding==[0;32] || value.owner_authority==[0;32] {return Err(Error::Admission);}Ok(())
 }
 impl Inbox {
     pub fn new_accounted(member:&Member)->Result<Self,Error> {let mut inbox=Self::new_live(member)?;inbox.state.reservations=Some(Journal::default());Ok(inbox)}
@@ -139,6 +139,8 @@ impl Inbox {
         let peer=self.contact_peer(member)?;let intro=self.state.introductions.get(&peer).ok_or(Error::Admission)?;
         // Established traffic needs the contact/session gate, not another debit.
         if intro.decision==Some(ContactResolutionKind::Answered) {return Ok(());}
+        let now=member.authorization_time()?;
+        if intro.strict.as_ref().is_none_or(|s|now>=s.policy.response_deadline) {return Err(Error::Admission);}
         let id=key(&peer,&intro.id);let gate=journal.gates.get(&id).ok_or(Error::Admission)?;
         self.check_reservation_context(member,&peer,gate)?;self.check_reservation_roster(member)?;
         if !self.runtime.reservations.contains(&id) || gate.outgoing.is_none() || gate.incoming.is_none() {return Err(Error::Admission);}Ok(())

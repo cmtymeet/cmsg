@@ -308,14 +308,6 @@ pub struct BrowserInbox {
 // Requiring Promise<true> prevents a forgotten `return` or an unawaited write
 // from accidentally being interpreted as a durable acknowledgement. The host
 // remains trusted to implement atomic durable storage and prevent rollback.
-async fn persist_browser(
-    persist: &Function,
-    checkpoint: &[u8],
-    outbound: &[Vec<u8>],
-) -> Result<(), JsValue> {
-    persist_browser_metadata(persist,checkpoint,outbound,&JsValue::NULL).await
-}
-
 async fn persist_browser_metadata(persist:&Function,checkpoint:&[u8],outbound:&[Vec<u8>],metadata:&JsValue)->Result<(),JsValue> {
     let wires = Array::new();
     for wire in outbound {
@@ -359,6 +351,17 @@ impl BrowserInbox {
         Ok(Self { inbox, member })
     }
 
+    async fn persist_candidate(&self,candidate:&mut Self,key:&[u8;32],context:&[u8],persist:&Function,outbound:&[Vec<u8>])->Result<(),JsValue> {
+        let expected=self.inbox.publication_version();
+        let next=candidate.inbox.advance_publication(expected).map_err(js_error)?;
+        let checkpoint=candidate.inbox.snapshot(&candidate.member,key,context).map_err(js_error)?;
+        let mut metadata=candidate.inbox.live_outbox_metadata(outbound);
+        metadata["expectedVersion"]=expected.into();metadata["nextVersion"]=next.into();
+        metadata["devicePublicKey"]=serde_json::json!(candidate.member.chat_public_key());
+        let metadata=js_sys::JSON::parse(&metadata.to_string()).map_err(|_|js_error(Error::InvalidStore))?;
+        persist_browser_metadata(persist,&checkpoint,outbound,&metadata).await
+    }
+
     async fn update<T>(
         &mut self,
         key: &[u8],
@@ -370,12 +373,7 @@ impl BrowserInbox {
         let mut candidate = self.duplicate(&key, context)?;
         let (output, outbound) =
             operation(&mut candidate.inbox, &mut candidate.member).map_err(js_error)?;
-        let checkpoint = candidate
-            .inbox
-            .snapshot(&candidate.member, &key, context)
-            .map_err(js_error)?;
-        let metadata=js_sys::JSON::parse(&candidate.inbox.live_outbox_metadata(&outbound).to_string()).map_err(|_|js_error(Error::InvalidStore))?;
-        persist_browser_metadata(persist, &checkpoint, &outbound,&metadata).await?;
+        self.persist_candidate(&mut candidate,&key,context,persist,&outbound).await?;
         *self = candidate;
         Ok(output)
     }
@@ -424,8 +422,8 @@ impl BrowserInbox {
                 },
             )
             .map_err(js_error)?;
-        if let Some(checkpoint) = checkpoint {
-            persist_browser(persist, &checkpoint, &[]).await?;
+        if checkpoint.is_some() {
+            self.persist_candidate(&mut candidate,&key,context,persist,&[]).await?;
             // A pending replacement already owns its KeyPackage private state.
             // Retire the external handle only after this first durable write.
             if let (Some(replacement), Some(retirement)) = (replacement, retirement) {
@@ -473,8 +471,8 @@ impl BrowserInbox {
                 },
             )
             .map_err(js_error)?;
-        if let Some(checkpoint) = checkpoint {
-            persist_browser(persist, &checkpoint, &[]).await?;
+        if checkpoint.is_some() {
+            self.persist_candidate(&mut candidate,&key,context,persist,&[]).await?;
             *self = candidate;
         }
         Ok(acceptance_name(result))
@@ -734,8 +732,8 @@ impl BrowserInbox {
                 Ok(())
             })
             .map_err(js_error)?;
-        if let Some(checkpoint) = checkpoint {
-            persist_browser(&persist, &checkpoint, &[]).await?;
+        if checkpoint.is_some() {
+            self.persist_candidate(&mut candidate,&key,context,&persist,&[]).await?;
             *self = candidate;
         }
         Ok(count)
@@ -958,13 +956,8 @@ impl BrowserInbox {
                 },
             )
             .map_err(js_error)?;
-        let checkpoint = checkpoint.ok_or_else(|| js_error(Error::InvalidStore))?;
-        persist_browser(
-            &persist,
-            &checkpoint,
-            &[invitation.welcome.clone(), invitation.control.clone()],
-        )
-        .await?;
+        checkpoint.ok_or_else(|| js_error(Error::InvalidStore))?;
+        self.persist_candidate(&mut candidate,&key,context,&persist,&[invitation.welcome.clone(),invitation.control.clone()]).await?;
         replacement.member = retirement;
         *self = candidate;
         Ok(BrowserReopeningInvitation { invitation })
@@ -1089,8 +1082,8 @@ impl BrowserInbox {
                 },
             )
             .map_err(js_error)?;
-        if let Some(checkpoint) = checkpoint {
-            persist_browser(&persist, &checkpoint, &[]).await?;
+        if checkpoint.is_some() {
+            self.persist_candidate(&mut candidate,&key,context,&persist,&[]).await?;
             *self = candidate;
         }
         let Some(request) = request else {
@@ -1135,8 +1128,8 @@ impl BrowserInbox {
                 },
             )
             .map_err(js_error)?;
-        if let Some(checkpoint) = checkpoint {
-            persist_browser(&persist, &checkpoint, &[]).await?;
+        if checkpoint.is_some() {
+            self.persist_candidate(&mut candidate,&key,context,&persist,&[]).await?;
             *self = candidate;
         }
         Ok(acceptance_name(result))
