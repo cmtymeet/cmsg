@@ -49,6 +49,11 @@ impl Bridge {
   for wire in pair.bi.pending_live_controls() {core(pair.ai.receive_contact(&mut pair.a,&wire,&KEY,CONTEXT,|checkpoint|self.save(0,checkpoint)))?;}
   core(pair.bi.clear_live_controls(&pair.b,&KEY,CONTEXT,|checkpoint|self.save(1,checkpoint)))?;Ok(())
  }
+ pub(super) fn load(&self,owner:usize)->Result<Vec<u8>> {
+  let file=std::fs::File::open(self.directory.join(format!("owner{owner}.sealed"))).map_err(|_|"checkpoint missing")?;
+  let mut bytes=Vec::new();file.take(1024*1024+1).read_to_end(&mut bytes).map_err(|_|"checkpoint read")?;
+  if bytes.len()>1024*1024 {return Err("checkpoint bound");}Ok(bytes)
+ }
  pub(super) fn save(&self,owner:usize,bytes:&[u8])->std::result::Result<(),cmsg::Error> {
   let final_path=self.directory.join(format!("owner{owner}.sealed"));let temporary=self.directory.join(format!("owner{owner}.next"));
   let result=(||->std::io::Result<()> {
@@ -74,9 +79,13 @@ impl Bridge {
   };
   let written=writer.join().map_err(|_|cmsg::Error::Admission)?;let output=reader.join().map_err(|_|cmsg::Error::Admission)?.map_err(|_|cmsg::Error::Admission)?;
   if !status.is_some_and(|s|s.success()) || written.is_err() || output.len()>16*1024 {return Err(cmsg::Error::Admission);}
-  #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Verified {verified:bool,statement:VerifiedReservation}
+  #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Verified {verified:bool,statement:Value,#[serde(rename="validUntil")] valid_until:u64}
   let value:Verified=serde_json::from_slice(&output).map_err(|_|cmsg::Error::Admission)?;
-  if !value.verified {return Err(cmsg::Error::Admission);}Ok(value.statement)
+  if !value.verified {return Err(cmsg::Error::Admission);}
+  let mut statement=value.statement;
+  if !statement.is_object() || statement.get("validUntil").is_some() {return Err(cmsg::Error::Admission);}
+  statement["validUntil"]=value.valid_until.into();
+  serde_json::from_value(statement).map_err(|_|cmsg::Error::Admission)
  }
 }
 impl ReservationVerifier for Bridge {

@@ -6,7 +6,7 @@ struct Verifier {bad_role:bool,local_current:bool}
 impl ReservationVerifier for Verifier {
  fn verify_remote(&mut self,_:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {
   let mut expected=c.expected.clone();if self.bad_role {expected.phase=1;}
-  Ok(VerifiedReservation {expected,account_policy_digest:[7;32],state_version:3,state_commitment:[8;32],presentation_binding:[9;32],owner_authority:[10;32]})
+  Ok(VerifiedReservation {expected,account_policy_digest:[7;32],state_version:3,state_commitment:[8;32],presentation_binding:[9;32],owner_authority:[10;32],valid_until:500})
  }
  fn verify_current_local(&mut self,e:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {if !self.local_current {return Err(Error::Admission);}self.verify_remote(e,c)}
 }
@@ -71,4 +71,36 @@ fn pending_accounted_contact_is_bound_to_one_recipient_device_and_roster() {
  p.bi.bind_active_reservations(&p.b,b"a",b"b",&mut v,&KEY,CONTEXT,|_|Ok(())).unwrap();
  p.send_intro();let answer=p.send_answer();p.ai.receive_contact(&mut p.a,&answer,&KEY,CONTEXT,|_|Ok(())).unwrap();
  assert!(p.ai.check_group(&staged).is_ok(),"established roster may add independent devices");
+}
+#[test]
+fn remote_verification_precedes_refreshed_own_check_and_expired_verdicts_never_publish() {
+ struct Sequenced {time:std::sync::Arc<common::accounting::Time>,calls:Vec<(&'static str,u64)>,advance:u64,remote_until:u64}
+ impl ReservationVerifier for Sequenced {
+  fn verify_remote(&mut self,_:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {
+   self.calls.push(("remote",c.now));self.time.0.store(self.advance,std::sync::atomic::Ordering::Relaxed);
+   let mut value=Verifier {bad_role:false,local_current:true}.verify_remote(b"",c)?;value.valid_until=self.remote_until;Ok(value)
+  }
+  fn verify_current_local(&mut self,_:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {
+   self.calls.push(("local",c.now));Verifier {bad_role:false,local_current:true}.verify_remote(b"",c)
+  }
+ }
+ for recipient in [false,true] {
+  let mut p=Pair::configured(10_000);configure(&mut p);
+  if recipient {p.bi.authorize_incoming_reservation(&p.b,b"a",&mut Verifier {bad_role:false,local_current:true},&KEY,CONTEXT,|_|Ok(())).unwrap();}
+  let mut verifier=Sequenced {time:p.time.clone(),calls:vec![],advance:101,remote_until:150};
+  let (inbox,member)=if recipient {(&mut p.bi,&p.b)} else {(&mut p.ai,&p.a)};
+  inbox.bind_active_reservations(member,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|Ok(())).unwrap();
+  assert_eq!(verifier.calls,vec![("remote",100),("local",101)]);
+  assert_eq!(inbox.reservation_contexts(member).unwrap().outgoing.now,101);
+ }
+ let mut p=Pair::configured(10_000);configure(&mut p);
+ let mut verifier=Sequenced {time:p.time.clone(),calls:vec![],advance:150,remote_until:150};
+ assert!(p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|panic!("expired proof must not publish")).is_err());
+ assert_eq!(verifier.calls,vec![("remote",100),("local",150)]);
+ assert!(p.ai.send_contact(&mut p.a,b"expired",&KEY,CONTEXT,|_,_|panic!("no release")).is_err());
+ let mut p=Pair::configured(10_000);configure(&mut p);
+ let mut verifier=Sequenced {time:p.time.clone(),calls:vec![],advance:101,remote_until:150};
+ p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.time.0.store(150,std::sync::atomic::Ordering::Relaxed);
+ assert!(p.ai.send_contact(&mut p.a,b"later expiry",&KEY,CONTEXT,|_,_|panic!("release rechecks verifier expiry independently of lease")).is_err());
 }

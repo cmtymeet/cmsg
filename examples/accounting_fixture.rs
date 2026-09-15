@@ -228,7 +228,7 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
                 state
                     .pair
                     .ai
-                    .receive_contact(&mut state.pair.a, &wire, &KEY, CONTEXT, |_| Ok(())),
+                    .receive_contact(&mut state.pair.a, &wire, &KEY, CONTEXT, |checkpoint|match &storage {Some(s)=>s.save(0,checkpoint),None=>Ok(())})),
             )?;
             if let Some(bridge)=&state.bridge {bridge.flush(&mut state.pair)?;}
             state.phase = 1;
@@ -247,14 +247,21 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
             }
             send_intro(state)?;
             state.pair.time.0.store(now, Ordering::Relaxed);
+            let storage=state.bridge.clone();
             core(state.pair.bi.resolve_introduction(
                 state.pair.ar.member_id(),
                 ContactResolutionKind::ClosedForever,
                 &state.pair.b,
                 &KEY,
                 CONTEXT,
-                |_| Ok(()),
+                |checkpoint|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())},
             ))?;
+            if let Some(bridge)=&storage {
+                let (restored,member)=core(cmsg::Inbox::restore_with_clock(&bridge.load(1)?,&KEY,CONTEXT,state.pair.time.clone()))?;
+                if !restored.is_closed(state.pair.ar.member_id()) || restored.outbound_resolution_receipt(state.pair.ar.member_id())
+                    !=state.pair.bi.outbound_resolution_receipt(state.pair.ar.member_id()) {return Err("durable Close recovery mismatch");}
+                state.pair.bi=restored;state.pair.b=member;
+            }
             state.phase = 2;
             let receipt = core(state.pair.bi.prepare_accounting_receipt(
                 state.pair.ar.member_id(),

@@ -1,21 +1,28 @@
 //! Host proof-verifier bindings; a peer-supplied success boolean is never parsed.
 use super::*;
 use crate::{ReservationContext,ReservationPolicy,ReservationVerifier,VerifiedReservation};
-struct Checked(Vec<VerifiedReservation>);
-impl ReservationVerifier for Checked {
- fn verify_remote(&mut self,_:&[u8],context:&ReservationContext)->Result<VerifiedReservation,Error> {
-  self.0.iter().find(|v|v.expected==context.expected).cloned().ok_or(Error::Admission)
+struct CheckedValue {context:ReservationContext,own:bool,evidence:[u8;32],value:VerifiedReservation}
+struct Checked(Vec<CheckedValue>);
+impl Checked {
+ fn matching(&self,evidence:&[u8],context:&ReservationContext,own:bool)->Result<VerifiedReservation,Error> {
+  self.0.iter().find(|v|v.own==own && v.evidence==crate::live::hash(evidence) && v.context.expected==context.expected
+   && v.context.device_public_key==context.device_public_key && context.now>=v.context.now && context.now<v.value.valid_until)
+   .map(|v|v.value.clone()).ok_or(Error::Admission)
  }
- fn verify_current_local(&mut self,e:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {self.verify_remote(e,c)}
 }
-async fn verify_host(callback:&Function,evidence:&[u8],context:&ReservationContext,own:bool)->Result<VerifiedReservation,JsValue> {
+impl ReservationVerifier for Checked {
+ fn verify_remote(&mut self,e:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {self.matching(e,c,false)}
+ fn verify_current_local(&mut self,e:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {self.matching(e,c,true)}
+}
+async fn verify_host(callback:&Function,evidence:&[u8],context:&ReservationContext,own:bool)->Result<CheckedValue,JsValue> {
  if evidence.is_empty() || evidence.len()>MAX_WIRE_BYTES {return Err(js_error(Error::Admission));}
  let expected=serde_json::to_string(context).map_err(|_|js_error(Error::Admission))?;
  let value=callback.call3(&JsValue::UNDEFINED,&Uint8Array::from(evidence).into(),&JsValue::from_str(&expected),&JsValue::from_bool(own)).map_err(|_|js_error(Error::Admission))?;
  if !value.is_instance_of::<Promise>() {return Err(js_error(Error::Admission));}
  let value=JsFuture::from(Promise::from(value)).await.map_err(|_|js_error(Error::Admission))?;
  let text=value.as_string().filter(|s|s.len()<=16*1024).ok_or_else(||js_error(Error::Admission))?;
- serde_json::from_str(&text).map_err(|_|js_error(Error::Admission))
+ let value=serde_json::from_str(&text).map_err(|_|js_error(Error::Admission))?;
+ Ok(CheckedValue {context:context.clone(),own,evidence:crate::live::hash(evidence),value})
 }
 #[wasm_bindgen]
 impl BrowserInbox {
@@ -49,10 +56,14 @@ impl BrowserInbox {
  pub async fn bind_active_reservations(&mut self,outgoing:&[u8],incoming:&[u8],verifier:Function,key:&[u8],context:&[u8],persist:Function)->Result<(),JsValue> {
   let expected=self.inbox.reservation_contexts(&self.member).map_err(js_error)?;
   let own=data_encoding::BASE64URL_NOPAD.decode(self.member.member_id().map_err(js_error)?.as_bytes()).map_err(|_|js_error(Error::Admission))?;
-  let a=verify_host(&verifier,outgoing,&expected.outgoing,own==expected.outgoing.expected.owner).await?;
-  let b=verify_host(&verifier,incoming,&expected.incoming,own==expected.incoming.expected.owner).await?;
+  let local_outgoing=own==expected.outgoing.expected.owner;
+  let remote=if local_outgoing {verify_host(&verifier,incoming,&expected.incoming,false).await?}
+    else {verify_host(&verifier,outgoing,&expected.outgoing,false).await?};
+  let refreshed=self.inbox.reservation_contexts(&self.member).map_err(js_error)?;
+  let local=if local_outgoing {verify_host(&verifier,outgoing,&refreshed.outgoing,true).await?}
+    else {verify_host(&verifier,incoming,&refreshed.incoming,true).await?};
   let wrapping=wrapping_key(key)?;
-  self.update(key,context,&persist,|inbox,member|{inbox.bind_active_reservations(member,outgoing,incoming,&mut Checked(vec![a,b]),&wrapping,context,|_|Ok(()))?;Ok(((),vec![]))}).await
+  self.update(key,context,&persist,|inbox,member|{inbox.bind_active_reservations(member,outgoing,incoming,&mut Checked(vec![remote,local]),&wrapping,context,|_|Ok(()))?;Ok(((),vec![]))}).await
  }
  #[wasm_bindgen(js_name=invalidateReservation)]
  pub async fn invalidate_reservation(&mut self,key:&[u8],context:&[u8],persist:Function)->Result<(),JsValue> {

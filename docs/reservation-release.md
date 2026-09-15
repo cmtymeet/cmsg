@@ -53,3 +53,19 @@ Native test doubles exercise authorization/storage boundaries; they are not
 proof-validity evidence. Actual proof composition and native/Wasm/IndexedDB
 results must identify the tested revisions. Source additions alone are not
 validation results.
+
+Verification runs remote proof work first, refreshes the trusted contact context,
+and queries current own state last. A verifier also returns `validUntil` as
+trusted metadata, separate from the proof statement. It bounds the common
+policy expiry, reservation lease and original reserved device delegation expiry.
+The accepted accounting request's commit horizon is not the Active state's
+lifetime. Binding and first-payload release independently require time strictly
+before both verification bounds. Browser cached verdicts match the complete
+device, role, tuple, evidence digest and verification mode, permit forward time
+within that bound, and reject clock rollback.
+
+Current-own verification is a snapshot, not a lock across verification, network
+I/O and persistence. The embedding serializes own accounting updates and Inbox
+publication and invalidates the gate when the accepted own obligation changes.
+The fixture's actual Close checkpoint is read back and restored before it emits
+accounting evidence; signatures cannot substitute for durable local history.

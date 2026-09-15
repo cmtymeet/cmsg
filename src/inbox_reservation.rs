@@ -40,7 +40,7 @@ impl Journal {
 }
 fn check(value:&VerifiedReservation,expected:&ReservationExpectation,policy:&ReservationPolicy)->Result<(),Error> {
     if &value.expected!=expected || value.account_policy_digest!=policy.account_policy_digest || value.state_version==0
-        || value.state_version>9_007_199_254_740_991 || value.state_commitment==[0;32] || value.presentation_binding==[0;32] || value.owner_authority==[0;32] {return Err(Error::Admission);}Ok(())
+        || value.state_version>9_007_199_254_740_991 || value.state_commitment==[0;32] || value.presentation_binding==[0;32] || value.owner_authority==[0;32] || value.valid_until<=policy.opened_at || value.valid_until>9_007_199_254_740_991 {return Err(Error::Admission);}Ok(())
 }
 impl Inbox {
     pub fn new_accounted(member:&Member)->Result<Self,Error> {let mut inbox=Self::new_live(member)?;inbox.state.reservations=Some(Journal::default());Ok(inbox)}
@@ -103,6 +103,9 @@ impl Inbox {
         if contexts.incoming.expected.owner!=member_bytes(&self.state.recipient_id)? || outgoing.len()>MAX_WIRE_BYTES {return Err(Error::Admission);}
         let id=key(&peer,&contexts.outgoing.expected.nonce);let gate=self.state.reservations.as_ref().unwrap().gates.get(&id).unwrap();
         let verified=verifier.verify_remote(outgoing,&contexts.outgoing)?;check(&verified,&contexts.outgoing.expected,&gate.policy)?;
+        let refreshed=self.reservation_contexts(member)?;
+        if refreshed.outgoing.expected!=contexts.outgoing.expected || refreshed.outgoing.device_public_key!=contexts.outgoing.device_public_key
+            || refreshed.outgoing.now>=verified.valid_until {return Err(Error::Admission);}
         let mut changed=self.duplicate();let gate=changed.state.reservations.as_mut().unwrap().gates.get_mut(&id).unwrap();gate.consented=true;gate.outgoing=Some(verified);
         persist(&changed.seal(member,key_bytes,context)?)?;*self=changed;Ok(())
     }
@@ -111,8 +114,15 @@ impl Inbox {
         let peer=self.contact_peer(member)?;let contexts=self.reservation_contexts(member)?;let id=key(&peer,&contexts.outgoing.expected.nonce);
         let gate=self.state.reservations.as_ref().unwrap().gates.get(&id).unwrap();let own=member_bytes(&self.state.recipient_id)?;
         if own==contexts.incoming.expected.owner && !gate.consented {return Err(Error::Admission);}
-        let a=if own==contexts.outgoing.expected.owner {verifier.verify_current_local(outgoing,&contexts.outgoing)?} else {verifier.verify_remote(outgoing,&contexts.outgoing)?};
-        let b=if own==contexts.incoming.expected.owner {verifier.verify_current_local(incoming,&contexts.incoming)?} else {verifier.verify_remote(incoming,&contexts.incoming)?};
+        let local_outgoing=own==contexts.outgoing.expected.owner;
+        let remote=if local_outgoing {verifier.verify_remote(incoming,&contexts.incoming)?} else {verifier.verify_remote(outgoing,&contexts.outgoing)?};
+        let refreshed=self.reservation_contexts(member)?;
+        let local=if local_outgoing {verifier.verify_current_local(outgoing,&refreshed.outgoing)?} else {verifier.verify_current_local(incoming,&refreshed.incoming)?};
+        let (a,b)=if local_outgoing {(local,remote)} else {(remote,local)};
+        let final_context=self.reservation_contexts(member)?;
+        if final_context.outgoing.expected!=contexts.outgoing.expected || final_context.incoming.expected!=contexts.incoming.expected
+            || final_context.outgoing.device_public_key!=contexts.outgoing.device_public_key || final_context.incoming.device_public_key!=contexts.incoming.device_public_key
+            || final_context.outgoing.now>=a.valid_until || final_context.incoming.now>=b.valid_until {return Err(Error::Admission);}
         check(&a,&contexts.outgoing.expected,&gate.policy)?;check(&b,&contexts.incoming.expected,&gate.policy)?;
         let mut changed=self.duplicate();let gate=changed.state.reservations.as_mut().unwrap().gates.get_mut(&id).unwrap();gate.outgoing=Some(a);gate.incoming=Some(b);
         changed.runtime.reservations.insert(id);persist(&changed.seal(member,key_bytes,context)?)?;*self=changed;Ok(())
@@ -143,6 +153,7 @@ impl Inbox {
         if intro.strict.as_ref().is_none_or(|s|now>=s.policy.response_deadline) {return Err(Error::Admission);}
         let id=key(&peer,&intro.id);let gate=journal.gates.get(&id).ok_or(Error::Admission)?;
         self.check_reservation_context(member,&peer,gate)?;self.check_reservation_roster(member)?;
-        if !self.runtime.reservations.contains(&id) || gate.outgoing.is_none() || gate.incoming.is_none() {return Err(Error::Admission);}Ok(())
+        if !self.runtime.reservations.contains(&id) || gate.outgoing.as_ref().is_none_or(|v|now>=v.valid_until)
+            || gate.incoming.as_ref().is_none_or(|v|now>=v.valid_until) {return Err(Error::Admission);}Ok(())
     }
 }
