@@ -12,6 +12,12 @@ archive_variable = "TORJS_SOURCE_ARCHIVE"
 digest_variable = "TORJS_SOURCE_SHA256"
 workflows = ["tor-browser"]
 
+[archives.chutney]
+revision = "6cc158868d722e652975cb4efd5b278d95ff2fbb"
+archive_variable = "CHUTNEY_SOURCE_ARCHIVE"
+digest_variable = "CHUTNEY_SOURCE_SHA256"
+workflows = ["tor-tools"]
+
 [archives.arti]
 revision = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3"
 archive_variable = "ARTI_SOURCE_ARCHIVE"
