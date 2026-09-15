@@ -93,6 +93,14 @@ encrypted channel authenticated to another root-authorized device of the same
 member. `renewDeviceAdmission` saves its new credential and outbound MLS commit
 together. `restore` restores the combined encrypted inbox and session.
 
+`awaitingPeerResolution` distinguishes an unresolved remote obligation from
+local conversation closure. Private inbound/outbound receipt accessors retain
+the signed result for recovery. After device-certificate renewal,
+`refreshOutboundResolution` can renew an expired stored decision without
+changing its pair, nonce or outcome; `closeContact` can then send a fresh
+encrypted close. Raw receipt bytes contain contact identities, are not MLS wire
+frames or anonymous proofs, and must never be sent to board logs or telemetry.
+
 `signPresence`, `signDisconnect` and `authorizeAllocation` expose only typed
 board statements. There is no generic device-signing or private-key export API.
 

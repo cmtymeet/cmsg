@@ -217,6 +217,7 @@ export async function runBrowserContract() {
   await rejects(() => senderInbox.sendBytes(new Uint8Array(65), sessionKey, sessionContext, saveSender), 'caller intro byte bound');
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, async () => undefined), 'missing durable acknowledgement');
   const guardedWire = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
+  assert(senderInbox.awaitingPeerResolution(recipientId), 'sent intro retains peer obligation');
   assert(sameBytes((await store.read('sender')).outbound[0], guardedWire), 'outbox committed with checkpoint');
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'one introduction until authentic reply');
   await rejects(() => recipientInbox.receive(guardedWire, sessionKey, sessionContext,
@@ -238,6 +239,9 @@ export async function runBrowserContract() {
   const closeWire = await recipientInbox.closeContact(sessionKey, sessionContext, saveRecipient);
   const closeReceived = await senderInbox.receive(closeWire, sessionKey, sessionContext, saveSender);
   assert(closeReceived.kind === 'contactClosed' && senderInbox.isClosed(recipientId), 'authenticated encrypted closure reaches peer');
+  assert(senderInbox.inboundResolutionReceipt(recipientId).length > 0
+    && recipientInbox.outboundResolutionReceipt(senderId).length > 0, 'private resolution retained for recovery');
+  await rejects(() => recipientInbox.refreshOutboundResolution(senderId, sessionKey, sessionContext, saveRecipient), 'unexpired receipt cannot be refreshed');
   closeReceived.free();
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'peer closure stops further messages');
   const restoredInbox = BrowserInbox.restore((await store.read('recipient')).checkpoint, sessionKey, sessionContext);

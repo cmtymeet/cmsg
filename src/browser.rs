@@ -401,6 +401,32 @@ impl BrowserInbox {
     #[wasm_bindgen(js_name = needsResolution)]
     pub fn needs_resolution(&self, peer: &str) -> bool { self.inbox.needs_resolution(peer) }
 
+    #[wasm_bindgen(js_name = awaitingPeerResolution)]
+    pub fn awaiting_peer_resolution(&self, peer: &str) -> bool { self.inbox.awaiting_peer_resolution(peer) }
+
+    /// Private peer decision; never send its named contact data to telemetry or
+    /// a public board. This is not an anonymous proof or an encrypted wire frame.
+    #[wasm_bindgen(js_name = inboundResolutionReceipt)]
+    pub fn inbound_resolution_receipt(&self, peer: &str) -> Option<Vec<u8>> {
+        self.inbox.inbound_resolution_receipt(peer).map(<[u8]>::to_vec)
+    }
+
+    #[wasm_bindgen(js_name = outboundResolutionReceipt)]
+    pub fn outbound_resolution_receipt(&self, peer: &str) -> Option<Vec<u8>> {
+        self.inbox.outbound_resolution_receipt(peer).map(<[u8]>::to_vec)
+    }
+
+    #[wasm_bindgen(js_name = refreshOutboundResolution)]
+    pub async fn refresh_outbound_resolution(&mut self, peer: &str, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            let receipt = inbox.refresh_outbound_resolution(peer, member, &wrapping, context, |_| Ok(()))?;
+            // The receipt is retained inside the encrypted checkpoint. It is
+            // not an MLS wire frame and must not enter the transport outbox.
+            Ok((receipt, Vec::new()))
+        }).await
+    }
+
     #[wasm_bindgen(js_name = beginFirstContact)]
     #[allow(clippy::too_many_arguments)]
     pub async fn begin_first_contact(
