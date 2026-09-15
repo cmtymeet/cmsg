@@ -35,7 +35,8 @@ if test "${CHECK_SUITE:-core}" = browser; then
   timeout 300 node .ci/browser-check.mjs || result=$?
   cargo fmt --all
   tar --create --file "$artifact_dir/formatted-browser-source.tar" src/browser_accounting.rs
-  tar --create --file "$artifact_dir/browser-package.tar" browser/pkg browser/index.mjs browser/package.json
+  tar --create --file "$artifact_dir/browser-package.tar" browser/pkg browser/index.mjs browser/index.d.ts browser/package.json \
+    browser/live-stream.mjs browser/live-stream.d.ts browser/indexeddb-store.mjs browser/indexeddb-store.d.ts
   (
     cd "$artifact_dir"
     sha256sum Cargo.lock browser-helper-Cargo.lock browser-package.tar formatted-browser-source.tar > SHA256SUMS
