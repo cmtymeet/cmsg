@@ -224,12 +224,16 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
             send_intro(state)?;
             let storage=state.bridge.clone();
             let wire=core(state.pair.bi.send_contact(&mut state.pair.b,b"answer",&KEY,CONTEXT,|checkpoint,_|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;
-            core(
-                state
-                    .pair
-                    .ai
-                    .receive_contact(&mut state.pair.a, &wire, &KEY, CONTEXT, |checkpoint|match &storage {Some(s)=>s.save(0,checkpoint),None=>Ok(())})),
-            )?;
+            core(state.pair.ai.receive_contact(
+                &mut state.pair.a,
+                &wire,
+                &KEY,
+                CONTEXT,
+                |checkpoint| match &storage {
+                    Some(s) => s.save(0, checkpoint),
+                    None => Ok(()),
+                },
+            ))?;
             if let Some(bridge)=&state.bridge {bridge.flush(&mut state.pair)?;}
             state.phase = 1;
             let receipt = core(state.pair.bi.prepare_accounting_receipt(
