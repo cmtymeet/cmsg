@@ -1,7 +1,7 @@
 // Genuine Tor/Arti network fixture. Every identity and payload is synthetic.
 import { init, BrowserIdentity, BrowserMember, BrowserOnionEndpoint } from '../index.mjs';
 import { OnionFramedStream } from '../internal/streams.mjs';
-import { TorClient, Log, storage } from '/torjs/entryPoints/wasm-file/index.js';
+import { TorClient, Log, storage, KpsGateway } from '/torjs/entryPoints/wasm-file/index.js';
 
 const encode = value => new TextEncoder().encode(value);
 const b64 = bytes => btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -49,12 +49,41 @@ export async function runTorRuntimeContract() {
   const passed = progress.passed;
   let member;
   try {
+    progress.stage = 'gateway-non-relay-rejection';
+    check(/^127\.0\.0\.1:\d+$/.test(fixture.nonRelayCanary), 'owned loopback canary');
+    const gateway = new KpsGateway(fixture.gateway);
+    let forbidden = false;
+    try {
+      const socket = await bounded(gateway.connect(fixture.nonRelayCanary, {
+        signal: AbortSignal.timeout(15_000),
+      }), 20_000);
+      socket.close();
+    } catch (error) {
+      forbidden = String(error) === `Error: CONNECT ${fixture.nonRelayCanary}: 403 target is not an advertised Tor relay`;
+    } finally { gateway.close(); }
+    check(forbidden, 'real KPS gateway returned non-relay 403');
+    check((await (await fetch('/__canary', { cache: 'no-store' })).json()).connections === 0,
+      'gateway rejected before opening a non-relay TCP socket');
+    passed.push('actual browser WebRTC/KPS non-relay CONNECT rejected with 403 and zero owned canary connections');
     progress.stage = 'client-bootstrap';
     for (let i = 0; i < 2; i++) clients.push(new TorClient({ gateway: fixture.gateway,
       testNetwork: JSON.stringify(fixture.arti), storage: new storage.MemoryStorage(),
       log: new Log({ rawLog: () => {} }), logLevel: 'error' }));
     await bounded(Promise.all(clients.map(c => c.ready())), 360_000);
     passed.push('two browser Arti clients bootstrapped on isolated signed Tor network');
+    progress.stage = 'wasm-onion-route-validation';
+    for (const host of [fixture.nonRelayCanary, '127.0.0.1', '[::1]', 'https://example.invalid/',
+      'a'.repeat(56) + '.onion', 'example.invalid\r\nHost: 127.0.0.1']) {
+      let rejected = false;
+      try {
+        const stream = await bounded(clients[0].connectOnion(host, 80, 1_000), 2_000);
+        stream.close(); stream.free();
+      } catch (error) { rejected = String(error) === 'tor-js:OnionTransport'; }
+      check(rejected, 'actual Wasm rejects invalid route with coarse error');
+    }
+    check((await (await fetch('/__canary', { cache: 'no-store' })).json()).connections === 0,
+      'invalid contact routes did not reach the canary');
+    passed.push('actual Wasm rejects IP, URL, malformed onion and injected route inputs before connection');
     for (let index = 0; index < clients.length; index++) {
       progress.stage = `service-publication-${index}`;
       services.push(await bounded(clients[index].hostOnion(80, 4, 60_000), 65_000));

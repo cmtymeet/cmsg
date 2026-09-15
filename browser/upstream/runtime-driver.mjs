@@ -1,6 +1,7 @@
 // Run the real browser Arti/onion fixture using generated, pinned artifacts.
 // No npm packages, browser downloads, persistent browser profiles or services.
 import { createServer } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -49,13 +50,26 @@ async function startNative(request, response) {
   } finally { clearTimeout(timer); }
 }
 if (!binary || !artifact) throw new Error('BROWSER_BIN and BROWSER_EVIDENCE are required');
+let canaryConnections = 0;
+const canary = createTcpServer(socket => {
+  canaryConnections += 1;
+  socket.destroy();
+});
+canary.listen(0, '127.0.0.1');
+await once(canary, 'listening');
+const canaryTarget = `127.0.0.1:${canary.address().port}`;
 const mime = { '.mjs': 'text/javascript', '.js': 'text/javascript', '.wasm': 'application/wasm' };
 const server = createServer(async (request, response) => {
   try {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     if (pathname === '/fixture.json') {
       response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      response.end(await readFile(fixturePath)); return;
+      const fixture = JSON.parse(await readFile(fixturePath, 'utf8'));
+      response.end(JSON.stringify({ ...fixture, nonRelayCanary: canaryTarget })); return;
+    }
+    if (pathname === '/__canary') {
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ connections: canaryConnections })); return;
     }
     if (pathname === '/__native-peer' && request.method === 'POST') {
       await startNative(request, response); return;
@@ -170,8 +184,10 @@ try {
   if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
   if (!result.result || !('value' in result.result)) throw new Error('Browser contract returned no evidence');
   if (forbiddenRequests.length) throw new Error(`Unexpected external requests: ${JSON.stringify(forbiddenRequests)}`);
+  if (canaryConnections !== 0) throw new Error('Non-relay canary received a TCP connection');
   const evidence = { source: process.env.CI_COMMIT_SHA, browser: metadata.Browser,
-    runtime: process.version, contract: result.result.value, unexpectedExternalRequests: forbiddenRequests };
+    runtime: process.version, contract: result.result.value, nonRelayCanaryConnections: canaryConnections,
+    unexpectedExternalRequests: forbiddenRequests };
   await writeFile(artifact, JSON.stringify(evidence, null, 2) + '\n');
   process.stdout.write(JSON.stringify(evidence) + '\n');
 } catch (error) {
@@ -189,6 +205,7 @@ try {
   await writeFile(artifact + '.failure.json', JSON.stringify({
     source: process.env.CI_COMMIT_SHA, testNetworkOnly: true,
     browser: browserMetadata?.Browser, runtime: process.version, progress,
+    nonRelayCanaryConnections: canaryConnections,
     failure: String(error).slice(0, 8192), chromiumStderr: stderr.slice(-8000),
     unexpectedExternalRequests: forbiddenRequests.slice(0, 16).map(url => url.slice(0, 512)),
   }, null, 2) + '\n');
@@ -209,5 +226,6 @@ try {
   await browserClosed;
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
+  await new Promise(resolve => canary.close(resolve));
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

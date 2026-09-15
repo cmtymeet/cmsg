@@ -55,7 +55,9 @@ Crow run 45 at cmsg `755d83b1a`. Its full service stage passed the Wasm
 compilation check and all three native ephemeral-state tests. Crow run 52 at
 cmsg `addbe4c0f1` built the actual Wasm modules, matching generated bindings,
 TorJS TypeScript/declarations, experimental npm package and native gateway/peer.
-Its fixture stopped at Tor network readiness before browser traffic began;
+Crow run 62 at cmsg `6b494416a6` reached the actual browser and bootstrapped
+both Arti clients over WebRTC/KPS on the signed isolated network. The first
+onion service launched, then reached the 60-second publication deadline;
 browser onion reachability remains unverified.
 The stock dependency is not enabled by the cmsg production adapter.
 
@@ -67,9 +69,10 @@ deadlineMs)` accepts at most one cmsg-sized chunk. One read and one write can
 proceed concurrently; overlapping operations in the same direction fail.
 `close()` aborts both outstanding operations and drops their stream halves.
 The cmsg frame codec can then interoperate directly with native `FramedStream`.
-The embedding factory still needs a whole-bootstrap deadline and a dedicated
-client shutdown policy, since the TypeScript client waits for bootstrap before
-entering the Wasm connect deadline.
+The embedding factory must also enforce a whole-bootstrap deadline and client
+shutdown, since the TypeScript client waits for bootstrap before entering the
+Wasm connect deadline. Its scripted factory tests are separate from this actual
+network runtime contract.
 
 The service stage produces the same stream type from Arti's accepted
 onion-service streams, with fresh ephemeral key/state ownership and
@@ -139,6 +142,14 @@ authority upload/download/vote endpoints, or a vanguard mode other than `full`.
 The ephemeral keystore is still forced after reading test configuration.
 The production `service` stage has no test-network option or this module.
 
+This stage also applies `arti-service-diagnostics.patch` and, after copying the
+service overlay, `tor-js-service-diagnostics.patch`. Readiness failures retain
+only fixed labels for the introduction-point manager and descriptor publisher,
+plus the latest introduction-circuit error category across the fixture runtime.
+These labels contain no error payloads, keys, onion addresses or paths. They
+do not relax readiness or deadlines and are absent from the production service
+stage.
+
 Use at least four disposable directory authorities, twenty guard relays and
 two exits with the fixture's own signed consensus. Full vanguards keep the
 normal L2/L3 pools of four/eight. The local-only path needs subnet exclusions
@@ -193,11 +204,24 @@ without changing kernel settings. Bounded startup/final diagnostics retain
 synthetic listener settings, process status and log tails; private keys and
 control authentication files are excluded.
 
-The contract uses the actual generated TorJS APIs and cmsg framing. Two browser
-clients publish different onions and exchange byte frames. A separate native
+The contract uses the actual generated TorJS APIs and cmsg framing. It first
+requires the real KPS gateway to reject a CONNECT to an owned non-relay TCP
+canary with 403 while the canary records zero connections. It also requires
+the actual Wasm onion API to reject IP, URL, malformed onion and injected route
+inputs. The build runs the gateway's existing tunnel validation/resource tests
+and preserves their output. These new assertions still need a completed CI run.
+
+The remaining contract requires two browser clients to publish different onions
+and exchange byte frames. A separate native
 cmsg process then connects through its test Tor SOCKS endpoint to a browser-owned
 onion, exchanges MLS key-package/welcome data over that route, and authenticates
 binary cmsg ciphertext in both directions. This checks the generic core and
 native framing; the strict contact-policy API has its separate browser contract.
 The browser's localhost control request only launches the synthetic native test
 participant. It is fixture orchestration, not an application transport endpoint.
+
+The tab's HTTP request interception does not observe every worker, WebRTC ICE,
+UDP or browser background request. An empty tab request list does not establish
+process-wide network silence; run 62's Chromium diagnostics included background
+GCM errors. Gateway restriction and malformed-route assertions support their
+specific boundaries, not a general browser anonymity claim.
