@@ -68,7 +68,9 @@ fn browser_mls_roundtrip_keeps_arbitrary_bytes_and_text_distinct() {
     assert_eq!(received.member_id().unwrap(), alice.member_id().unwrap());
     assert_eq!(received.text(), None);
     assert!(bob.receive(&wire).is_err());
-    let received = alice.receive(&bob.send_text("literal <tag> 🦀").unwrap()).unwrap();
+    let received = alice
+        .receive(&bob.send_text("literal <tag> 🦀").unwrap())
+        .unwrap();
     assert_eq!(received.kind(), "text");
     assert_eq!(received.text().as_deref(), Some("literal <tag> 🦀"));
 }

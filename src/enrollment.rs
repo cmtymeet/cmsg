@@ -38,7 +38,13 @@ impl Member {
         let grant = self.admission_grant()?;
         let member_id = verify_admission(&grant, trust, &self.chat_public_key(), now)?;
         if let Some(device) = self.device_authorization()? {
-            crate::verify_device_authorization(&device, &trust.community_id, &member_id, &self.chat_public_key(), now)?;
+            crate::verify_device_authorization(
+                &device,
+                &trust.community_id,
+                &member_id,
+                &self.chat_public_key(),
+                now,
+            )?;
         }
         let c = challenge;
         if c.community_id != trust.community_id

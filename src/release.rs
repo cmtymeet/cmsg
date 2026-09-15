@@ -68,15 +68,28 @@ impl Drop for ContactDirective {
 
 impl ContactDirective {
     fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
-        let policy = self.policy.map(|p| (p.response_deadline, p.max_intro_bytes));
+        let policy = self
+            .policy
+            .map(|p| (p.response_deadline, p.max_intro_bytes));
         serde_json::to_vec(&serde_json::json!([
-            "cmsg.contact-directive.v1", self.community_id, self.owner_id,
-            self.peer_id, self.revision, B64.encode(&self.previous_digest),
-            B64.encode(&self.peer_digest), self.kind, B64.encode(&self.introduction_id),
-            self.initiator_id, B64.encode(&self.group_id), policy, self.until,
-            self.issued_at, B64.encode(&self.device_public_key),
+            "cmsg.contact-directive.v1",
+            self.community_id,
+            self.owner_id,
+            self.peer_id,
+            self.revision,
+            B64.encode(&self.previous_digest),
+            B64.encode(&self.peer_digest),
+            self.kind,
+            B64.encode(&self.introduction_id),
+            self.initiator_id,
+            B64.encode(&self.group_id),
+            policy,
+            self.until,
+            self.issued_at,
+            B64.encode(&self.device_public_key),
             B64.encode(&Sha256::digest(&self.identity_credential)),
-        ])).map_err(|_| Error::InvalidMessage)
+        ]))
+        .map_err(|_| Error::InvalidMessage)
     }
 
     /// Stable chain identifier; callers must authenticate the directive before
@@ -89,12 +102,20 @@ impl ContactDirective {
     }
 
     fn validate_shape(&self, verifier: &Member, at: u64) -> Result<(), Error> {
-        if self.community_id != verifier.trust.as_ref().ok_or(Error::Admission)?.community_id
+        if self.community_id
+            != verifier
+                .trust
+                .as_ref()
+                .ok_or(Error::Admission)?
+                .community_id
             || !crate::admission::valid_member_id(&self.owner_id)
             || !crate::admission::valid_member_id(&self.peer_id)
             || self.owner_id == self.peer_id
-            || self.revision == 0 || self.revision > MAX_SAFE_INTEGER
-            || self.issued_at == 0 || self.issued_at > at || self.issued_at > MAX_SAFE_INTEGER
+            || self.revision == 0
+            || self.revision > MAX_SAFE_INTEGER
+            || self.issued_at == 0
+            || self.issued_at > at
+            || self.issued_at > MAX_SAFE_INTEGER
             || self.group_id.len() > 256
             || self.device_public_key.len() != 32
             || self.identity_credential.len() > 8192
@@ -104,18 +125,25 @@ impl ContactDirective {
         }
         match self.kind {
             ContactDirectiveKind::Block => {
-                if self.policy.is_some() || !self.initiator_id.is_empty()
-                    || self.until.is_some_and(|until| until <= self.issued_at || until > MAX_SAFE_INTEGER)
+                if self.policy.is_some()
+                    || !self.initiator_id.is_empty()
+                    || self
+                        .until
+                        .is_some_and(|until| until <= self.issued_at || until > MAX_SAFE_INTEGER)
                 {
                     return Err(Error::Admission);
                 }
             }
             ContactDirectiveKind::FreshInitiative => {
                 let policy = self.policy.ok_or(Error::Admission)?;
-                if self.until.is_some() || self.introduction_id == [0; 32] || self.group_id.is_empty()
+                if self.until.is_some()
+                    || self.introduction_id == [0; 32]
+                    || self.group_id.is_empty()
                     || (self.initiator_id != self.owner_id && self.initiator_id != self.peer_id)
-                    || policy.response_deadline <= at || policy.response_deadline > MAX_SAFE_INTEGER
-                    || policy.max_intro_bytes == 0 || policy.max_intro_bytes > crate::MAX_DATA_BYTES
+                    || policy.response_deadline <= at
+                    || policy.response_deadline > MAX_SAFE_INTEGER
+                    || policy.max_intro_bytes == 0
+                    || policy.max_intro_bytes > crate::MAX_DATA_BYTES
                 {
                     return Err(Error::Admission);
                 }
@@ -129,17 +157,30 @@ impl ContactDirective {
     pub(crate) fn verify_device_signature(&self, verifier: &Member, at: u64) -> Result<(), Error> {
         self.validate_shape(verifier, at)?;
         if verifier.verify_private_identity_credential(
-            &self.identity_credential, &self.device_public_key, at,
-        )? != self.owner_id || verifier.verify_private_identity_credential(
-            &self.identity_credential, &self.device_public_key, self.issued_at,
-        )? != self.owner_id {
+            &self.identity_credential,
+            &self.device_public_key,
+            at,
+        )? != self.owner_id
+            || verifier.verify_private_identity_credential(
+                &self.identity_credential,
+                &self.device_public_key,
+                self.issued_at,
+            )? != self.owner_id
+        {
             return Err(Error::Admission);
         }
-        let key: [u8; 32] = self.device_public_key.as_slice().try_into().map_err(|_| Error::Admission)?;
-        VerifyingKey::from_bytes(&key).map_err(|_| Error::Admission)?.verify_strict(
-            &zeroize::Zeroizing::new(self.signing_bytes()?),
-            &Signature::from_slice(&self.signature).map_err(|_| Error::Admission)?,
-        ).map_err(|_| Error::Admission)
+        let key: [u8; 32] = self
+            .device_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Admission)?;
+        VerifyingKey::from_bytes(&key)
+            .map_err(|_| Error::Admission)?
+            .verify_strict(
+                &zeroize::Zeroizing::new(self.signing_bytes()?),
+                &Signature::from_slice(&self.signature).map_err(|_| Error::Admission)?,
+            )
+            .map_err(|_| Error::Admission)
     }
 }
 
@@ -189,26 +230,46 @@ impl Drop for ContactResolution {
 impl ContactResolution {
     fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
         serde_json::to_vec(&serde_json::json!([
-            "cmsg.contact-resolution.v1", self.community_id,
-            self.responder_id, self.peer_id, B64.encode(&self.introduction_id),
-            self.kind, self.issued_at, B64.encode(&self.device_public_key),
+            "cmsg.contact-resolution.v1",
+            self.community_id,
+            self.responder_id,
+            self.peer_id,
+            B64.encode(&self.introduction_id),
+            self.kind,
+            self.issued_at,
+            B64.encode(&self.device_public_key),
             B64.encode(&Sha256::digest(&self.identity_credential)),
-        ])).map_err(|_| Error::InvalidMessage)
+        ]))
+        .map_err(|_| Error::InvalidMessage)
     }
 
     pub(crate) fn verify_device_signature(&self, verifier: &Member, at: u64) -> Result<(), Error> {
-        if self.identity_credential.len() > 8192 || verifier.verify_private_identity_credential(
-            &self.identity_credential, &self.device_public_key, at,
-        )? != self.responder_id || verifier.verify_private_identity_credential(
-            &self.identity_credential, &self.device_public_key, self.issued_at,
-        )? != self.responder_id {
+        if self.identity_credential.len() > 8192
+            || verifier.verify_private_identity_credential(
+                &self.identity_credential,
+                &self.device_public_key,
+                at,
+            )? != self.responder_id
+            || verifier.verify_private_identity_credential(
+                &self.identity_credential,
+                &self.device_public_key,
+                self.issued_at,
+            )? != self.responder_id
+        {
             return Err(Error::Admission);
         }
-        let key: [u8; 32] = self.device_public_key.as_slice().try_into().map_err(|_| Error::Admission)?;
-        VerifyingKey::from_bytes(&key).map_err(|_| Error::Admission)?.verify_strict(
-            &zeroize::Zeroizing::new(self.signing_bytes()?),
-            &Signature::from_slice(&self.signature).map_err(|_| Error::Admission)?,
-        ).map_err(|_| Error::Admission)
+        let key: [u8; 32] = self
+            .device_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Admission)?;
+        VerifyingKey::from_bytes(&key)
+            .map_err(|_| Error::Admission)?
+            .verify_strict(
+                &zeroize::Zeroizing::new(self.signing_bytes()?),
+                &Signature::from_slice(&self.signature).map_err(|_| Error::Admission)?,
+            )
+            .map_err(|_| Error::Admission)
     }
 }
 
@@ -306,18 +367,36 @@ impl Member {
         policy: Option<crate::FirstContactPolicy>,
         until: Option<u64>,
     ) -> Result<ContactDirective, Error> {
-        if self.device_authorization()?.is_none() { return Err(Error::Admission); }
+        if self.device_authorization()?.is_none() {
+            return Err(Error::Admission);
+        }
         let mut directive = ContactDirective {
-            community_id: self.trust.as_ref().ok_or(Error::Admission)?.community_id.clone(),
-            owner_id: self.member_id()?, peer_id: peer_id.to_owned(), revision,
-            previous_digest: *previous_digest, peer_digest: *peer_digest, kind,
-            introduction_id: *introduction_id, initiator_id: initiator_id.to_owned(),
-            group_id: group_id.to_vec(), policy, until, issued_at: self.authorization_time()?,
+            community_id: self
+                .trust
+                .as_ref()
+                .ok_or(Error::Admission)?
+                .community_id
+                .clone(),
+            owner_id: self.member_id()?,
+            peer_id: peer_id.to_owned(),
+            revision,
+            previous_digest: *previous_digest,
+            peer_digest: *peer_digest,
+            kind,
+            introduction_id: *introduction_id,
+            initiator_id: initiator_id.to_owned(),
+            group_id: group_id.to_vec(),
+            policy,
+            until,
+            issued_at: self.authorization_time()?,
             device_public_key: self.chat_public_key(),
-            identity_credential: self.private_identity_credential()?, signature: Vec::new(),
+            identity_credential: self.private_identity_credential()?,
+            signature: Vec::new(),
         };
         directive.validate_shape(self, directive.issued_at)?;
-        directive.signature = self.signer.sign(&zeroize::Zeroizing::new(directive.signing_bytes()?))
+        directive.signature = self
+            .signer
+            .sign(&zeroize::Zeroizing::new(directive.signing_bytes()?))
             .map_err(|_| Error::Admission)?;
         Ok(directive)
     }
@@ -330,7 +409,8 @@ impl Member {
         expected_owner: &str,
     ) -> Result<(), Error> {
         let own_id = self.member_id()?;
-        if self.device_authorization()?.is_none() || directive.owner_id != expected_owner
+        if self.device_authorization()?.is_none()
+            || directive.owner_id != expected_owner
             || !((directive.owner_id == own_id) ^ (directive.peer_id == own_id))
         {
             return Err(Error::Admission);
@@ -355,7 +435,12 @@ impl Member {
             return Err(Error::Admission);
         }
         let mut resolution = ContactResolution {
-            community_id: self.trust.as_ref().ok_or(Error::Admission)?.community_id.clone(),
+            community_id: self
+                .trust
+                .as_ref()
+                .ok_or(Error::Admission)?
+                .community_id
+                .clone(),
             responder_id,
             peer_id: peer_id.to_owned(),
             introduction_id: *introduction_id,
@@ -365,7 +450,9 @@ impl Member {
             identity_credential: self.private_identity_credential()?,
             signature: Vec::new(),
         };
-        resolution.signature = self.signer.sign(&zeroize::Zeroizing::new(resolution.signing_bytes()?))
+        resolution.signature = self
+            .signer
+            .sign(&zeroize::Zeroizing::new(resolution.signing_bytes()?))
             .map_err(|_| Error::Admission)?;
         Ok(resolution)
     }
@@ -386,7 +473,8 @@ impl Member {
             || resolution.responder_id != expected_peer
             || resolution.peer_id == resolution.responder_id
             || resolution.introduction_id != *introduction_id
-            || resolution.issued_at == 0 || resolution.issued_at > now
+            || resolution.issued_at == 0
+            || resolution.issued_at > now
         {
             return Err(Error::Admission);
         }
@@ -700,13 +788,23 @@ mod backdated_contact_tests {
             signature: String::new(),
         };
         let bytes = serde_json::to_vec(&serde_json::json!([
-            "cvld.admission.v1", grant.issuer_key_id, grant.community_id,
-            grant.member_id, grant.chat_public_key, grant.policy_digest,
-            grant.issued_at, grant.expires_at,
-        ])).unwrap();
+            "cvld.admission.v1",
+            grant.issuer_key_id,
+            grant.community_id,
+            grant.member_id,
+            grant.chat_public_key,
+            grant.policy_digest,
+            grant.issued_at,
+            grant.expires_at,
+        ]))
+        .unwrap();
         grant.signature = B64.encode(&ed25519_dalek::Signer::sign(&issuer, &bytes).to_bytes());
-        let authorization = root.authorize_device(&device_key, device_start, 1000).unwrap();
-        member.bind_device_admission(grant, trust, authorization, 100).unwrap();
+        let authorization = root
+            .authorize_device(&device_key, device_start, 1000)
+            .unwrap();
+        member
+            .bind_device_admission(grant, trust, authorization, 100)
+            .unwrap();
         member
     }
 
@@ -714,9 +812,10 @@ mod backdated_contact_tests {
     // payload. Rejection must come from credential time bounds, not tampering.
     fn assert_signature_valid(member: &Member, bytes: &[u8], signature: &[u8]) {
         let key: [u8; 32] = member.chat_public_key().try_into().unwrap();
-        VerifyingKey::from_bytes(&key).unwrap().verify_strict(
-            bytes, &Signature::from_slice(signature).unwrap(),
-        ).unwrap();
+        VerifyingKey::from_bytes(&key)
+            .unwrap()
+            .verify_strict(bytes, &Signature::from_slice(signature).unwrap())
+            .unwrap();
     }
 
     #[test]
@@ -727,19 +826,33 @@ mod backdated_contact_tests {
         for (grant_start, device_start) in [(80, 80), (1, 80), (80, 1)] {
             let owner = device(grant_start, device_start);
             let owner_id = owner.member_id().unwrap();
-            let mut directive = owner.sign_contact_directive(
-                &peer_id, 1, &[0; 32], &[0; 32],
-                ContactDirectiveKind::FreshInitiative, &[7; 32], &owner_id,
-                b"synthetic-fresh-group",
-                Some(crate::FirstContactPolicy { response_deadline: 500, max_intro_bytes: 512 }),
-                None,
-            ).unwrap();
-            peer.verify_contact_directive(&directive, &owner_id).unwrap();
+            let mut directive = owner
+                .sign_contact_directive(
+                    &peer_id,
+                    1,
+                    &[0; 32],
+                    &[0; 32],
+                    ContactDirectiveKind::FreshInitiative,
+                    &[7; 32],
+                    &owner_id,
+                    b"synthetic-fresh-group",
+                    Some(crate::FirstContactPolicy {
+                        response_deadline: 500,
+                        max_intro_bytes: 512,
+                    }),
+                    None,
+                )
+                .unwrap();
+            peer.verify_contact_directive(&directive, &owner_id)
+                .unwrap();
             directive.issued_at = 79;
             let bytes = directive.signing_bytes().unwrap();
             directive.signature = owner.signer.sign(&bytes).unwrap();
             assert_signature_valid(&owner, &bytes, &directive.signature);
-            assert!(matches!(peer.verify_contact_directive(&directive, &owner_id), Err(Error::Admission)));
+            assert!(matches!(
+                peer.verify_contact_directive(&directive, &owner_id),
+                Err(Error::Admission)
+            ));
         }
     }
 
@@ -751,9 +864,15 @@ mod backdated_contact_tests {
         for (grant_start, device_start) in [(80, 80), (1, 80), (80, 1)] {
             let owner = device(grant_start, device_start);
             let owner_id = owner.member_id().unwrap();
-            for kind in [ContactResolutionKind::Answered, ContactResolutionKind::ClosedForever] {
-                let mut receipt = owner.sign_contact_resolution(&peer_id, &introduction_id, kind).unwrap();
-                peer.verify_contact_resolution(&receipt, &owner_id, &introduction_id).unwrap();
+            for kind in [
+                ContactResolutionKind::Answered,
+                ContactResolutionKind::ClosedForever,
+            ] {
+                let mut receipt = owner
+                    .sign_contact_resolution(&peer_id, &introduction_id, kind)
+                    .unwrap();
+                peer.verify_contact_resolution(&receipt, &owner_id, &introduction_id)
+                    .unwrap();
                 receipt.issued_at = 79;
                 let bytes = receipt.signing_bytes().unwrap();
                 receipt.signature = owner.signer.sign(&bytes).unwrap();

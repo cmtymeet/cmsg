@@ -155,7 +155,15 @@ fn independent_devices_of_one_identity_can_join_together() {
         .add(&[package, duplicate.key_package().unwrap()])
         .welcome;
     recipient.join(&welcome).unwrap();
-    assert_eq!(recipient.participants().unwrap().iter().filter(|p| p.member_id == recipient.member_id().unwrap()).count(), 2);
+    assert_eq!(
+        recipient
+            .participants()
+            .unwrap()
+            .iter()
+            .filter(|p| p.member_id == recipient.member_id().unwrap())
+            .count(),
+        2
+    );
 }
 #[test]
 fn independently_certified_second_device_is_accepted_by_existing_members() {
@@ -166,7 +174,10 @@ fn independently_certified_second_device_is_accepted_by_existing_members() {
         .join(&owner.add(&[recipient.key_package().unwrap()]).welcome)
         .unwrap();
     let addition = owner.add(&[duplicate.key_package().unwrap()]).commit;
-    assert!(matches!(recipient.receive(&addition).unwrap(), Received::MembershipChanged));
+    assert!(matches!(
+        recipient.receive(&addition).unwrap(),
+        Received::MembershipChanged
+    ));
     let legitimate = member(21);
     let valid = owner.add(&[legitimate.key_package().unwrap()]).commit;
     assert!(matches!(

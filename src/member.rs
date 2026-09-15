@@ -1,6 +1,6 @@
 use crate::{
-    validate_text, verify_admission, AdmissionGrant, AdmissionTrust, Clock, Error, Participant,
-    ParticipantHandle, DeviceAuthorization, MAX_DATA_BYTES, MAX_WIRE_BYTES,
+    validate_text, verify_admission, AdmissionGrant, AdmissionTrust, Clock, DeviceAuthorization,
+    Error, Participant, ParticipantHandle, MAX_DATA_BYTES, MAX_WIRE_BYTES,
 };
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
@@ -183,10 +183,14 @@ impl Member {
             &self.chat_public_key(),
             now,
         )?;
-        self.credential.credential = BasicCredential::new(serde_json::to_vec(&DeviceCredential {
-            admission: grant,
-            device_authorization,
-        }).map_err(|_| Error::Admission)?).into();
+        self.credential.credential = BasicCredential::new(
+            serde_json::to_vec(&DeviceCredential {
+                admission: grant,
+                device_authorization,
+            })
+            .map_err(|_| Error::Admission)?,
+        )
+        .into();
         self.trust = Some(trust);
         Ok(())
     }
@@ -200,7 +204,8 @@ impl Member {
     }
 
     pub(crate) fn private_identity_credential(&self) -> Result<Vec<u8>, Error> {
-        let basic = BasicCredential::try_from(self.credential.credential.clone()).map_err(|_| Error::Admission)?;
+        let basic = BasicCredential::try_from(self.credential.credential.clone())
+            .map_err(|_| Error::Admission)?;
         Ok(basic.identity().to_vec())
     }
 
@@ -214,7 +219,12 @@ impl Member {
         if credential_parts(&credential)?.1.is_none() {
             return Err(Error::Admission);
         }
-        verify_credential(&credential, key, self.trust.as_ref().ok_or(Error::Admission)?, at)
+        verify_credential(
+            &credential,
+            key,
+            self.trust.as_ref().ok_or(Error::Admission)?,
+            at,
+        )
     }
 
     pub fn member_id(&self) -> Result<String, Error> {
@@ -301,7 +311,11 @@ impl Member {
                 trust,
                 now,
             )?;
-            if credential_parts(package.leaf_node().credential())?.1.is_some() != root_bound {
+            if credential_parts(package.leaf_node().credential())?
+                .1
+                .is_some()
+                != root_bound
+            {
                 return Err(Error::Admission);
             }
             if !devices.insert(package.leaf_node().signature_key().as_slice().to_vec()) {
@@ -351,8 +365,16 @@ impl Member {
         self.prepare_join_at_current_time(welcome, true)
     }
 
-    fn prepare_join_at_current_time(&self, welcome: &[u8], historical: bool) -> Result<PreparedJoin, Error> {
-        if historical { self.stored_member_id()?; } else { self.member_id()?; }
+    fn prepare_join_at_current_time(
+        &self,
+        welcome: &[u8],
+        historical: bool,
+    ) -> Result<PreparedJoin, Error> {
+        if historical {
+            self.stored_member_id()?;
+        } else {
+            self.member_id()?;
+        }
         if self.group.is_some() {
             return Err(Error::InvalidState);
         }
@@ -378,7 +400,11 @@ impl Member {
                 .map_err(|_| Error::InvalidMessage)?;
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
         let sender = staged.welcome_sender().map_err(|_| Error::InvalidMessage)?;
-        let verify = if historical { verify_historical_credential } else { verify_credential };
+        let verify = if historical {
+            verify_historical_credential
+        } else {
+            verify_credential
+        };
         let inviter = verify(
             sender.credential(),
             sender.signature_key().as_slice(),
@@ -511,22 +537,38 @@ impl Member {
     }
 
     pub(crate) fn policy_group_id(&self) -> Result<Vec<u8>, Error> {
-        Ok(self.group.as_ref().ok_or(Error::InvalidState)?.group_id().as_slice().to_vec())
+        Ok(self
+            .group
+            .as_ref()
+            .ok_or(Error::InvalidState)?
+            .group_id()
+            .as_slice()
+            .to_vec())
     }
 
     pub(crate) fn send_policy_record(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Error> {
-        if bytes.len() > MAX_WIRE_BYTES / 2 { return Err(Error::InvalidMessage); }
+        if bytes.len() > MAX_WIRE_BYTES / 2 {
+            return Err(Error::InvalidMessage);
+        }
         self.send_payload(2, bytes)
     }
 
-    pub(crate) fn remember_policy_text(&mut self, member_id: &str, text: &[u8]) -> Result<(), Error> {
-        self.history.push(TextMessage { member_id: member_id.to_owned(), text: validate_text(text)?.to_owned() });
+    pub(crate) fn remember_policy_text(
+        &mut self,
+        member_id: &str,
+        text: &[u8],
+    ) -> Result<(), Error> {
+        self.history.push(TextMessage {
+            member_id: member_id.to_owned(),
+            text: validate_text(text)?.to_owned(),
+        });
         Ok(())
     }
 
     fn send_payload(&mut self, kind: u8, bytes: &[u8]) -> Result<Vec<u8>, Error> {
         self.member_id()?;
-        let mut payload = Zeroizing::new(Vec::with_capacity(PAYLOAD_HEADER.len() + 1 + bytes.len()));
+        let mut payload =
+            Zeroizing::new(Vec::with_capacity(PAYLOAD_HEADER.len() + 1 + bytes.len()));
         payload.extend_from_slice(PAYLOAD_HEADER);
         payload.push(kind);
         payload.extend_from_slice(bytes);
@@ -558,7 +600,10 @@ impl Member {
     pub fn receive_control(&mut self, wire: &[u8]) -> Result<(), Error> {
         match self.process_incoming(wire, true, &BTreeSet::new())? {
             Received::MembershipChanged => Ok(()),
-            Received::Text(_) | Received::Bytes(_) | Received::ContactClosed | Received::ContactPolicyChanged => Err(Error::InvalidMessage),
+            Received::Text(_)
+            | Received::Bytes(_)
+            | Received::ContactClosed
+            | Received::ContactPolicyChanged => Err(Error::InvalidMessage),
         }
     }
 
@@ -605,12 +650,8 @@ impl Member {
         };
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
         let sender_credential = processed.credential().clone();
-        let sender_id = verify_historical_credential(
-            &sender_credential,
-            &sender.signature_key,
-            trust,
-            now,
-        )?;
+        let sender_id =
+            verify_historical_credential(&sender_credential, &sender.signature_key, trust, now)?;
         if excluded.contains(&sender_id) {
             return Err(Error::Admission);
         }
@@ -622,7 +663,9 @@ impl Member {
                 }
                 let member_id =
                     verify_credential(&sender_credential, &sender.signature_key, trust, now)?;
-                let payload = bytes.strip_prefix(PAYLOAD_HEADER).ok_or(Error::InvalidMessage)?;
+                let payload = bytes
+                    .strip_prefix(PAYLOAD_HEADER)
+                    .ok_or(Error::InvalidMessage)?;
                 let (&kind, body) = payload.split_first().ok_or(Error::InvalidMessage)?;
                 match kind {
                     0 => Received::Text(TextMessage {
@@ -789,12 +832,21 @@ impl Member {
             return Err(Error::Admission);
         }
         let encoded = if let Some(device_authorization) = replacement_device.or(old_device) {
-            crate::verify_device_authorization(&device_authorization, &trust.community_id,
-                &old_id, &self.chat_public_key(), now)?;
-            serde_json::to_vec(&DeviceCredential { admission: grant, device_authorization })
+            crate::verify_device_authorization(
+                &device_authorization,
+                &trust.community_id,
+                &old_id,
+                &self.chat_public_key(),
+                now,
+            )?;
+            serde_json::to_vec(&DeviceCredential {
+                admission: grant,
+                device_authorization,
+            })
         } else {
             serde_json::to_vec(&grant)
-        }.map_err(|_| Error::Admission)?;
+        }
+        .map_err(|_| Error::Admission)?;
         let credential = CredentialWithKey {
             credential: BasicCredential::new(encoded).into(),
             signature_key: self.chat_public_key().into(),
@@ -863,7 +915,12 @@ impl Member {
     }
 
     pub(crate) fn staged_copy(&self, key: &[u8; 32], context: &[u8]) -> Result<Self, Error> {
-        Self::restore_with_clock(&self.snapshot(key, context)?, key, context, self.clock.clone())
+        Self::restore_with_clock(
+            &self.snapshot(key, context)?,
+            key,
+            context,
+            self.clock.clone(),
+        )
     }
 
     /// Restores the exact saved ratchet state. Authenticating an old valid snapshot
@@ -889,7 +946,8 @@ impl Member {
             serde_json::from_slice(&plaintext).map_err(|_| Error::InvalidStore)?;
         let mut working = WorkingProvider(OpenMlsRustCrypto::default());
         {
-            let mut storage = working.0
+            let mut storage = working
+                .0
                 .storage()
                 .values
                 .write()
@@ -931,7 +989,9 @@ impl Member {
         }
         // Check the stored public/private signing-key pair, not just two public
         // fields that an inconsistent serializer could copy together.
-        let proof = self.signer.sign(b"cmsg.restore-key-consistency.v1")
+        let proof = self
+            .signer
+            .sign(b"cmsg.restore-key-consistency.v1")
             .map_err(|_| Error::InvalidStore)?;
         let public: [u8; 32] = key.as_slice().try_into().map_err(|_| Error::InvalidStore)?;
         VerifyingKey::from_bytes(&public)
@@ -951,7 +1011,8 @@ impl Member {
                 group,
                 self.trust.as_ref().ok_or(Error::InvalidStore)?,
                 self.clock.now()?,
-            ).map_err(|_| Error::InvalidStore)?;
+            )
+            .map_err(|_| Error::InvalidStore)?;
             let own = group.own_leaf().ok_or(Error::InvalidStore)?;
             if own.credential() != &self.credential.credential
                 || own.signature_key().as_slice() != key
@@ -1043,7 +1104,9 @@ fn credential_grant(credential: &Credential) -> Result<AdmissionGrant, Error> {
     Ok(credential_parts(credential)?.0)
 }
 
-fn credential_parts(credential: &Credential) -> Result<(AdmissionGrant, Option<DeviceAuthorization>), Error> {
+fn credential_parts(
+    credential: &Credential,
+) -> Result<(AdmissionGrant, Option<DeviceAuthorization>), Error> {
     let basic = BasicCredential::try_from(credential.clone()).map_err(|_| Error::Admission)?;
     if basic.identity().len() > 8192 {
         return Err(Error::Admission);
@@ -1051,7 +1114,9 @@ fn credential_parts(credential: &Credential) -> Result<(AdmissionGrant, Option<D
     if let Ok(bound) = serde_json::from_slice::<DeviceCredential>(basic.identity()) {
         return Ok((bound.admission, Some(bound.device_authorization)));
     }
-    serde_json::from_slice(basic.identity()).map(|grant| (grant, None)).map_err(|_| Error::Admission)
+    serde_json::from_slice(basic.identity())
+        .map(|grant| (grant, None))
+        .map_err(|_| Error::Admission)
 }
 fn verify_historical_credential(
     credential: &Credential,
@@ -1065,12 +1130,19 @@ fn verify_historical_credential(
     }
     let identity = verify_admission(&grant, trust, key, grant.issued_at)?;
     if let Some(device) = device {
-        if device.issued_at > now || device.expires_at <= grant.issued_at
+        if device.issued_at > now
+            || device.expires_at <= grant.issued_at
             || grant.expires_at <= device.issued_at
         {
             return Err(Error::Admission);
         }
-        crate::verify_device_authorization(&device, &trust.community_id, &identity, key, device.issued_at)?;
+        crate::verify_device_authorization(
+            &device,
+            &trust.community_id,
+            &identity,
+            key,
+            device.issued_at,
+        )?;
     }
     Ok(identity)
 }
@@ -1112,7 +1184,8 @@ fn verify_leaf_change(
         trust,
         now,
     )?;
-    if old_key != leaf.signature_key().as_slice() || old_id != new_id
+    if old_key != leaf.signature_key().as_slice()
+        || old_id != new_id
         || credential_parts(old)?.1.is_some() != credential_parts(leaf.credential())?.1.is_some()
     {
         return Err(Error::Admission);
@@ -1132,9 +1205,12 @@ fn verify_renewal_advance(old: &Credential, new: &Credential) -> Result<(), Erro
     let mut extended = new_grant.expires_at > old_grant.expires_at;
     match (old_device, new_device) {
         (Some(old), Some(new)) => {
-            if new.root_public_key != old.root_public_key || new.device_public_key != old.device_public_key
-                || new.member_id != old.member_id || new.community_id != old.community_id
-                || new.issued_at < old.issued_at || new.expires_at < old.expires_at
+            if new.root_public_key != old.root_public_key
+                || new.device_public_key != old.device_public_key
+                || new.member_id != old.member_id
+                || new.community_id != old.community_id
+                || new.issued_at < old.issued_at
+                || new.expires_at < old.expires_at
             {
                 return Err(Error::Admission);
             }
@@ -1237,13 +1313,17 @@ mod snapshot_validation_tests {
         let mut duplicate_storage = valid.clone();
         let first = duplicate_storage["storage"][0].clone();
         assert!(!first.is_null());
-        duplicate_storage["storage"].as_array_mut().unwrap().push(first);
+        duplicate_storage["storage"]
+            .as_array_mut()
+            .unwrap()
+            .push(first);
         assert!(restore_value(&duplicate_storage).is_err());
         let mut unknown_field = valid.clone();
         unknown_field["unknown_security_override"] = true.into();
         assert!(restore_value(&unknown_field).is_err());
         let mut injected_history = valid;
-        injected_history["history"] = serde_json::json!([{"member_id":"forged", "text":"injected"}]);
+        injected_history["history"] =
+            serde_json::json!([{"member_id":"forged", "text":"injected"}]);
         assert!(restore_value(&injected_history).is_err());
     }
 }

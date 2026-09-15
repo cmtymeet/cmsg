@@ -67,7 +67,13 @@ impl Member {
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
         let owner = verify_admission(&grant, trust, &self.chat_public_key(), now)?;
         if let Some(device) = self.device_authorization()? {
-            crate::verify_device_authorization(&device, &trust.community_id, &owner, &self.chat_public_key(), now)?;
+            crate::verify_device_authorization(
+                &device,
+                &trust.community_id,
+                &owner,
+                &self.chat_public_key(),
+                now,
+            )?;
         }
         if c.version != 1
             || c.owner_member_id != owner

@@ -20,7 +20,10 @@ fn fragmented_headers_and_bodies_preserve_binary_frame_boundaries() {
 fn invalid_frame_header_poisoning_prevents_reusing_partial_state() {
     for length in [0u32, 65, u32::MAX] {
         let mut codec = FrameCodec::new(64).unwrap();
-        assert_eq!(codec.push(&length.to_be_bytes()), Err(Error::InvalidMessage));
+        assert_eq!(
+            codec.push(&length.to_be_bytes()),
+            Err(Error::InvalidMessage)
+        );
         assert_eq!(codec.push(&[0, 0, 0, 1, 42]), Err(Error::Transport));
         assert_eq!(codec.encode(b"retry"), Err(Error::Transport));
     }

@@ -2,9 +2,10 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 
 pub(crate) fn valid_member_id(value: &str) -> bool {
-    value.len() == 43 && data_encoding::BASE64URL_NOPAD
-        .decode(value.as_bytes())
-        .is_ok_and(|bytes| bytes.len() == 32)
+    value.len() == 43
+        && data_encoding::BASE64URL_NOPAD
+            .decode(value.as_bytes())
+            .is_ok_and(|bytes| bytes.len() == 32)
 }
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -53,7 +53,9 @@ impl Member {
         expires_at: u64,
     ) -> Result<PresenceUpdate, Error> {
         let (grant, _, now) = self.current_board_authorization(expires_at)?;
-        if sequence == 0 || sequence > MAX_INTEGER { return Err(Error::Admission); }
+        if sequence == 0 || sequence > MAX_INTEGER {
+            return Err(Error::Admission);
+        }
         let mut update = PresenceUpdate {
             community_id: grant.community_id,
             member_id: grant.member_id,
@@ -62,18 +64,24 @@ impl Member {
             issued_at: now,
             expires_at,
             endpoint: endpoint.map(|endpoint| PresenceEndpoint {
-                host: endpoint.host().to_owned(), port: endpoint.port(),
+                host: endpoint.host().to_owned(),
+                port: endpoint.port(),
             }),
             signature: String::new(),
         };
         let bytes = serde_json::to_vec(&serde_json::json!([
-            "cfrm.presence.v1", update.community_id, update.member_id,
-            update.chat_public_key, update.sequence, update.issued_at,
-            update.expires_at, update.endpoint,
-        ])).map_err(|_| Error::Admission)?;
-        update.signature = BASE64URL_NOPAD.encode(
-            &self.signer.sign(&bytes).map_err(|_| Error::Admission)?,
-        );
+            "cfrm.presence.v1",
+            update.community_id,
+            update.member_id,
+            update.chat_public_key,
+            update.sequence,
+            update.issued_at,
+            update.expires_at,
+            update.endpoint,
+        ]))
+        .map_err(|_| Error::Admission)?;
+        update.signature =
+            BASE64URL_NOPAD.encode(&self.signer.sign(&bytes).map_err(|_| Error::Admission)?);
         Ok(update)
     }
 
@@ -105,19 +113,25 @@ impl Member {
             signature: String::new(),
         };
         let bytes = serde_json::to_vec(&serde_json::json!([
-            "cfrm.allocation.reserve.v1", request.community_id, request.member_id,
-            request.chat_public_key, request.policy_digest, request.nonce,
+            "cfrm.allocation.reserve.v1",
+            request.community_id,
+            request.member_id,
+            request.chat_public_key,
+            request.policy_digest,
+            request.nonce,
             BASE64URL_NOPAD.encode(&Sha256::digest(blinded_request)),
-            request.issued_at, request.expires_at,
-        ])).map_err(|_| Error::Admission)?;
-        request.signature = BASE64URL_NOPAD.encode(
-            &self.signer.sign(&bytes).map_err(|_| Error::Admission)?,
-        );
+            request.issued_at,
+            request.expires_at,
+        ]))
+        .map_err(|_| Error::Admission)?;
+        request.signature =
+            BASE64URL_NOPAD.encode(&self.signer.sign(&bytes).map_err(|_| Error::Admission)?);
         Ok(request)
     }
 
     fn current_board_authorization(
-        &self, expires_at: u64,
+        &self,
+        expires_at: u64,
     ) -> Result<(AdmissionGrant, DeviceAuthorization, u64), Error> {
         let now = self.authorization_time()?;
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
@@ -125,11 +139,20 @@ impl Member {
         let authorization = self.device_authorization()?.ok_or(Error::Admission)?;
         crate::verify_admission(&grant, trust, &self.chat_public_key(), now)?;
         crate::verify_device_authorization(
-            &authorization, &trust.community_id, &grant.member_id, &self.chat_public_key(), now,
+            &authorization,
+            &trust.community_id,
+            &grant.member_id,
+            &self.chat_public_key(),
+            now,
         )?;
-        if now == 0 || now >= expires_at || expires_at > MAX_INTEGER
-            || expires_at > grant.expires_at || expires_at > authorization.expires_at
-        { return Err(Error::Admission); }
+        if now == 0
+            || now >= expires_at
+            || expires_at > MAX_INTEGER
+            || expires_at > grant.expires_at
+            || expires_at > authorization.expires_at
+        {
+            return Err(Error::Admission);
+        }
         Ok((grant, authorization, now))
     }
 }

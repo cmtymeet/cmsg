@@ -59,7 +59,13 @@ pub fn root_device(identity: &cmsg::MemberIdentity) -> cmsg::Member {
     let mut certificate = grant(&key, 1);
     certificate.member_id = identity.member_id().to_owned();
     sign(&mut certificate);
-    member.bind_device_admission(certificate, trust(),
-        identity.authorize_device(&key, 1, 9_000_000_000).unwrap(), 100).unwrap();
+    member
+        .bind_device_admission(
+            certificate,
+            trust(),
+            identity.authorize_device(&key, 1, 9_000_000_000).unwrap(),
+            100,
+        )
+        .unwrap();
     member
 }

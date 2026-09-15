@@ -2,9 +2,9 @@
 //! JavaScript owns the UI, durable ciphertext storage and Tor transport. These
 //! bindings never call browser fetch, render messages or choose a gateway.
 use crate::{
-    Acceptance, AdmissionGrant, AdmissionTrust, Clock, DeviceAuthorization, Error, FirstContactPolicy,
-    FirstContactRole, FrameCodec, Inbox,
-    Invitation, Member, MemberIdentity, OnionEndpoint, Participant, Received, Redemption, MAX_DATA_BYTES, MAX_WIRE_BYTES,
+    Acceptance, AdmissionGrant, AdmissionTrust, Clock, DeviceAuthorization, Error,
+    FirstContactPolicy, FirstContactRole, FrameCodec, Inbox, Invitation, Member, MemberIdentity,
+    OnionEndpoint, Participant, Received, Redemption, MAX_DATA_BYTES, MAX_WIRE_BYTES,
 };
 use js_sys::{Array, Function, Promise, Uint8Array};
 use std::sync::Arc;
@@ -29,7 +29,9 @@ impl Clock for BrowserClock {
 
 fn wrapping_key(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, JsValue> {
     Ok(Zeroizing::new(
-        bytes.try_into().map_err(|_| js_error(Error::InvalidStore))?,
+        bytes
+            .try_into()
+            .map_err(|_| js_error(Error::InvalidStore))?,
     ))
 }
 
@@ -43,10 +45,16 @@ fn timestamp(seconds: f64) -> Result<u64, JsValue> {
     Ok(seconds as u64)
 }
 
-fn contact_policy(response_deadline: f64, max_intro_bytes: f64) -> Result<FirstContactPolicy, JsValue> {
-    if !max_intro_bytes.is_finite() || max_intro_bytes.fract() != 0.0
+fn contact_policy(
+    response_deadline: f64,
+    max_intro_bytes: f64,
+) -> Result<FirstContactPolicy, JsValue> {
+    if !max_intro_bytes.is_finite()
+        || max_intro_bytes.fract() != 0.0
         || !(1.0..=MAX_DATA_BYTES as f64).contains(&max_intro_bytes)
-    { return Err(js_error(Error::Admission)); }
+    {
+        return Err(js_error(Error::Admission));
+    }
     Ok(FirstContactPolicy {
         response_deadline: timestamp(response_deadline)?,
         max_intro_bytes: max_intro_bytes as usize,
@@ -162,8 +170,9 @@ impl BrowserMember {
             serde_json::from_str(grant_json).map_err(|_| js_error(Error::Admission))?;
         let trust: AdmissionTrust =
             serde_json::from_str(trust_json).map_err(|_| js_error(Error::Admission))?;
-        let device_authorization: DeviceAuthorization = serde_json::from_str(device_authorization_json)
-            .map_err(|_| js_error(Error::Admission))?;
+        let device_authorization: DeviceAuthorization =
+            serde_json::from_str(device_authorization_json)
+                .map_err(|_| js_error(Error::Admission))?;
         self.member
             .bind_device_admission(
                 grant,
@@ -307,7 +316,8 @@ async fn persist_browser(
     if JsFuture::from(promise)
         .await
         .map_err(|_| js_error(Error::InvalidStore))?
-        .as_bool() != Some(true)
+        .as_bool()
+        != Some(true)
     {
         return Err(js_error(Error::InvalidStore));
     }
@@ -316,10 +326,13 @@ async fn persist_browser(
 
 impl BrowserInbox {
     fn duplicate(&self, key: &[u8; 32], context: &[u8]) -> Result<Self, JsValue> {
-        let sealed = self.inbox.snapshot(&self.member, key, context).map_err(js_error)?;
-        let (inbox, member) = Inbox::restore_with_clock(
-            &sealed, key, context, Arc::new(BrowserClock),
-        ).map_err(js_error)?;
+        let sealed = self
+            .inbox
+            .snapshot(&self.member, key, context)
+            .map_err(js_error)?;
+        let (inbox, member) =
+            Inbox::restore_with_clock(&sealed, key, context, Arc::new(BrowserClock))
+                .map_err(js_error)?;
         Ok(Self { inbox, member })
     }
 
@@ -332,8 +345,12 @@ impl BrowserInbox {
     ) -> Result<T, JsValue> {
         let key = wrapping_key(key)?;
         let mut candidate = self.duplicate(&key, context)?;
-        let (output, outbound) = operation(&mut candidate.inbox, &mut candidate.member).map_err(js_error)?;
-        let checkpoint = candidate.inbox.snapshot(&candidate.member, &key, context).map_err(js_error)?;
+        let (output, outbound) =
+            operation(&mut candidate.inbox, &mut candidate.member).map_err(js_error)?;
+        let checkpoint = candidate
+            .inbox
+            .snapshot(&candidate.member, &key, context)
+            .map_err(js_error)?;
         persist_browser(persist, &checkpoint, &outbound).await?;
         *self = candidate;
         Ok(output)
@@ -342,35 +359,52 @@ impl BrowserInbox {
 
 fn acceptance_name(acceptance: Acceptance) -> String {
     match acceptance {
-        Acceptance::Joined => "joined", Acceptance::Rejected => "rejected",
-        Acceptance::Pending => "pending", Acceptance::NeedsPermit => "needsPermit",
-        Acceptance::Busy => "busy", Acceptance::Blocked => "blocked",
-    }.into()
+        Acceptance::Joined => "joined",
+        Acceptance::Rejected => "rejected",
+        Acceptance::Pending => "pending",
+        Acceptance::NeedsPermit => "needsPermit",
+        Acceptance::Busy => "busy",
+        Acceptance::Blocked => "blocked",
+    }
+    .into()
 }
 
 #[wasm_bindgen]
 impl BrowserInbox {
     #[wasm_bindgen(constructor)]
     pub fn new(member: BrowserMember) -> Result<BrowserInbox, JsValue> {
-        Ok(Self { inbox: Inbox::new(&member.member).map_err(js_error)?, member: member.member })
+        Ok(Self {
+            inbox: Inbox::new(&member.member).map_err(js_error)?,
+            member: member.member,
+        })
     }
 
     pub fn restore(sealed: &[u8], key: &[u8], context: &[u8]) -> Result<BrowserInbox, JsValue> {
         let (inbox, member) = Inbox::restore_with_clock(
-            sealed, &*wrapping_key(key)?, context, Arc::new(BrowserClock),
-        ).map_err(js_error)?;
+            sealed,
+            &*wrapping_key(key)?,
+            context,
+            Arc::new(BrowserClock),
+        )
+        .map_err(js_error)?;
         Ok(Self { inbox, member })
     }
 
     pub fn snapshot(&self, key: &[u8], context: &[u8]) -> Result<Vec<u8>, JsValue> {
-        self.inbox.snapshot(&self.member, &*wrapping_key(key)?, context).map_err(js_error)
+        self.inbox
+            .snapshot(&self.member, &*wrapping_key(key)?, context)
+            .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = memberId)]
-    pub fn member_id(&self) -> Result<String, JsValue> { self.member.member_id().map_err(js_error) }
+    pub fn member_id(&self) -> Result<String, JsValue> {
+        self.member.member_id().map_err(js_error)
+    }
 
     #[wasm_bindgen(js_name = chatPublicKey)]
-    pub fn chat_public_key(&self) -> Vec<u8> { self.member.chat_public_key() }
+    pub fn chat_public_key(&self) -> Vec<u8> {
+        self.member.chat_public_key()
+    }
 
     #[wasm_bindgen(js_name = invitationSender)]
     pub fn invitation_sender(&self, welcome: &[u8]) -> Result<String, JsValue> {
@@ -378,73 +412,134 @@ impl BrowserInbox {
     }
 
     #[wasm_bindgen(js_name = signPresence)]
-    pub fn sign_presence(&self, endpoint: &BrowserOnionEndpoint, sequence: f64, expires_at: f64) -> Result<String, JsValue> {
-        let update = self.member.sign_presence(Some(&endpoint.endpoint), timestamp(sequence)?, timestamp(expires_at)?).map_err(js_error)?;
+    pub fn sign_presence(
+        &self,
+        endpoint: &BrowserOnionEndpoint,
+        sequence: f64,
+        expires_at: f64,
+    ) -> Result<String, JsValue> {
+        let update = self
+            .member
+            .sign_presence(
+                Some(&endpoint.endpoint),
+                timestamp(sequence)?,
+                timestamp(expires_at)?,
+            )
+            .map_err(js_error)?;
         serde_json::to_string(&update).map_err(|_| js_error(Error::Admission))
     }
 
     #[wasm_bindgen(js_name = signDisconnect)]
     pub fn sign_disconnect(&self, sequence: f64, expires_at: f64) -> Result<String, JsValue> {
-        let update = self.member.sign_presence(None, timestamp(sequence)?, timestamp(expires_at)?).map_err(js_error)?;
+        let update = self
+            .member
+            .sign_presence(None, timestamp(sequence)?, timestamp(expires_at)?)
+            .map_err(js_error)?;
         serde_json::to_string(&update).map_err(|_| js_error(Error::Admission))
     }
 
     #[wasm_bindgen(js_name = authorizeAllocation)]
-    pub fn authorize_allocation(&self, policy_digest: &str, nonce: &[u8], blinded_request: &[u8], expires_at: f64) -> Result<String, JsValue> {
+    pub fn authorize_allocation(
+        &self,
+        policy_digest: &str,
+        nonce: &[u8],
+        blinded_request: &[u8],
+        expires_at: f64,
+    ) -> Result<String, JsValue> {
         let nonce: &[u8; 32] = nonce.try_into().map_err(|_| js_error(Error::Admission))?;
-        let request = self.member.authorize_allocation(policy_digest, nonce, blinded_request, timestamp(expires_at)?).map_err(js_error)?;
+        let request = self
+            .member
+            .authorize_allocation(
+                policy_digest,
+                nonce,
+                blinded_request,
+                timestamp(expires_at)?,
+            )
+            .map_err(js_error)?;
         serde_json::to_string(&request).map_err(|_| js_error(Error::Admission))
     }
 
     #[wasm_bindgen(js_name = isKnown)]
-    pub fn is_known(&self, peer: &str) -> bool { self.inbox.is_known(peer) }
+    pub fn is_known(&self, peer: &str) -> bool {
+        self.inbox.is_known(peer)
+    }
 
     #[wasm_bindgen(js_name = isClosed)]
-    pub fn is_closed(&self, peer: &str) -> bool { self.inbox.is_closed(peer) }
+    pub fn is_closed(&self, peer: &str) -> bool {
+        self.inbox.is_closed(peer)
+    }
 
     #[wasm_bindgen(js_name = isBlocked)]
-    pub fn is_blocked(&self, peer: &str) -> bool { self.inbox.is_blocked(peer) }
+    pub fn is_blocked(&self, peer: &str) -> bool {
+        self.inbox.is_blocked(peer)
+    }
 
     #[wasm_bindgen(js_name = pendingWelcome)]
-    pub fn pending_welcome(&self) -> Option<Vec<u8>> { self.inbox.pending_welcome().map(<[u8]>::to_vec) }
+    pub fn pending_welcome(&self) -> Option<Vec<u8>> {
+        self.inbox.pending_welcome().map(<[u8]>::to_vec)
+    }
 
     #[wasm_bindgen(js_name = needsResolution)]
-    pub fn needs_resolution(&self, peer: &str) -> bool { self.inbox.needs_resolution(peer) }
+    pub fn needs_resolution(&self, peer: &str) -> bool {
+        self.inbox.needs_resolution(peer)
+    }
 
     #[wasm_bindgen(js_name = awaitingPeerResolution)]
-    pub fn awaiting_peer_resolution(&self, peer: &str) -> bool { self.inbox.awaiting_peer_resolution(peer) }
+    pub fn awaiting_peer_resolution(&self, peer: &str) -> bool {
+        self.inbox.awaiting_peer_resolution(peer)
+    }
 
     /// Private peer decision; never send its named contact data to telemetry or
     /// a public board. This is not an anonymous proof or an encrypted wire frame.
     #[wasm_bindgen(js_name = inboundResolutionReceipt)]
     pub fn inbound_resolution_receipt(&self, peer: &str) -> Option<Vec<u8>> {
-        self.inbox.inbound_resolution_receipt(peer).map(<[u8]>::to_vec)
+        self.inbox
+            .inbound_resolution_receipt(peer)
+            .map(<[u8]>::to_vec)
     }
 
     #[wasm_bindgen(js_name = outboundResolutionReceipt)]
     pub fn outbound_resolution_receipt(&self, peer: &str) -> Option<Vec<u8>> {
-        self.inbox.outbound_resolution_receipt(peer).map(<[u8]>::to_vec)
+        self.inbox
+            .outbound_resolution_receipt(peer)
+            .map(<[u8]>::to_vec)
     }
 
     #[wasm_bindgen(js_name = refreshOutboundResolution)]
-    pub async fn refresh_outbound_resolution(&mut self, peer: &str, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn refresh_outbound_resolution(
+        &mut self,
+        peer: &str,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
-            let receipt = inbox.refresh_outbound_resolution(peer, member, &wrapping, context, |_| Ok(()))?;
+            let receipt =
+                inbox.refresh_outbound_resolution(peer, member, &wrapping, context, |_| Ok(()))?;
             // The receipt is retained inside the encrypted checkpoint. It is
             // not an MLS wire frame and must not enter the transport outbox.
             Ok((receipt, Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = beginFirstContact)]
     #[allow(clippy::too_many_arguments)]
     pub async fn begin_first_contact(
-        &mut self, peer: &str, introduction_id: &[u8], role: &str,
-        response_deadline: f64, max_intro_bytes: f64,
-        key: &[u8], context: &[u8], persist: Function,
+        &mut self,
+        peer: &str,
+        introduction_id: &[u8],
+        role: &str,
+        response_deadline: f64,
+        max_intro_bytes: f64,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
     ) -> Result<(), JsValue> {
-        let introduction_id: &[u8; 32] = introduction_id.try_into().map_err(|_| js_error(Error::Admission))?;
+        let introduction_id: &[u8; 32] = introduction_id
+            .try_into()
+            .map_err(|_| js_error(Error::Admission))?;
         let role = match role {
             "initiator" => FirstContactRole::Initiator,
             "recipient" => FirstContactRole::Recipient,
@@ -453,19 +548,38 @@ impl BrowserInbox {
         let policy = contact_policy(response_deadline, max_intro_bytes)?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
-            inbox.begin_first_contact(peer, introduction_id, role, policy, member, &wrapping, context, |_| Ok(()))?;
+            inbox.begin_first_contact(
+                peer,
+                introduction_id,
+                role,
+                policy,
+                member,
+                &wrapping,
+                context,
+                |_| Ok(()),
+            )?;
             Ok(((), Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = applyDeadlines)]
-    pub async fn apply_deadlines(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<usize, JsValue> {
+    pub async fn apply_deadlines(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<usize, JsValue> {
         let key = wrapping_key(key)?;
         let mut candidate = self.duplicate(&key, context)?;
         let mut checkpoint = None;
-        let count = candidate.inbox.apply_deadlines(&candidate.member, &key, context,
-            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
-        ).map_err(js_error)?;
+        let count = candidate
+            .inbox
+            .apply_deadlines(&candidate.member, &key, context, |bytes| {
+                checkpoint = Some(bytes.to_vec());
+                Ok(())
+            })
+            .map_err(js_error)?;
         if let Some(checkpoint) = checkpoint {
             persist_browser(&persist, &checkpoint, &[]).await?;
             *self = candidate;
@@ -474,113 +588,196 @@ impl BrowserInbox {
     }
 
     #[wasm_bindgen(js_name = createGroup)]
-    pub async fn create_group(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+    pub async fn create_group(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<(), JsValue> {
         self.update(key, context, &persist, |_, member| {
             member.create_group()?;
             Ok(((), Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = keyPackage)]
-    pub async fn key_package(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn key_package(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         self.update(key, context, &persist, |_, member| {
             let package = member.key_package()?;
             Ok((package.clone(), vec![package]))
-        }).await
+        })
+        .await
     }
 
-    pub async fn add(&mut self, package: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<BrowserInvitation, JsValue> {
+    pub async fn add(
+        &mut self,
+        package: &[u8],
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<BrowserInvitation, JsValue> {
         self.update(key, context, &persist, |inbox, member| {
             let invitation = member.add(package)?;
             inbox.check_group(member)?;
             let outbound = vec![invitation.commit.clone(), invitation.welcome.clone()];
             Ok((BrowserInvitation { invitation }, outbound))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = sendBytes)]
-    pub async fn send_bytes(&mut self, bytes: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn send_bytes(
+        &mut self,
+        bytes: &[u8],
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         self.apply_deadlines(key, context, persist.clone()).await?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             let mut deadline_changed = false;
             match inbox.send_contact_bytes(member, bytes, &wrapping, context, |_, wire| {
-                deadline_changed |= wire.is_empty(); Ok(())
+                deadline_changed |= wire.is_empty();
+                Ok(())
             }) {
                 Ok(wire) => Ok((Ok(wire.clone()), vec![wire])),
                 Err(error) if deadline_changed => Ok((Err(error), Vec::new())),
                 Err(error) => Err(error),
             }
-        }).await?.map_err(js_error)
+        })
+        .await?
+        .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = sendText)]
-    pub async fn send_text(&mut self, text: &str, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn send_text(
+        &mut self,
+        text: &str,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         self.apply_deadlines(key, context, persist.clone()).await?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             let mut deadline_changed = false;
             match inbox.send_contact(member, text.as_bytes(), &wrapping, context, |_, wire| {
-                deadline_changed |= wire.is_empty(); Ok(())
+                deadline_changed |= wire.is_empty();
+                Ok(())
             }) {
                 Ok(wire) => Ok((Ok(wire.clone()), vec![wire])),
                 Err(error) if deadline_changed => Ok((Err(error), Vec::new())),
                 Err(error) => Err(error),
             }
-        }).await?.map_err(js_error)
+        })
+        .await?
+        .map_err(js_error)
     }
 
-    pub async fn receive(&mut self, wire: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<BrowserReceived, JsValue> {
+    pub async fn receive(
+        &mut self,
+        wire: &[u8],
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<BrowserReceived, JsValue> {
         self.apply_deadlines(key, context, persist.clone()).await?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             let mut changed = false;
-            match inbox.receive_contact(member, wire, &wrapping, context, |_| { changed = true; Ok(()) }) {
+            match inbox.receive_contact(member, wire, &wrapping, context, |_| {
+                changed = true;
+                Ok(())
+            }) {
                 Ok(received) => Ok((Ok(BrowserReceived { received }), Vec::new())),
                 Err(error) if changed => Ok((Err(error), Vec::new())),
                 Err(error) => Err(error),
             }
-        }).await?.map_err(js_error)
+        })
+        .await?
+        .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = closeContact)]
-    pub async fn close_contact(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn close_contact(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         self.close_contact_until(None, key, context, persist).await
     }
 
     /// Close until the blocking member explicitly starts again. An optional
     /// expiry permits a later fresh initiative; it never revives old traffic.
     #[wasm_bindgen(js_name = closeContactUntil)]
-    pub async fn close_contact_until(&mut self, until: Option<f64>, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn close_contact_until(
+        &mut self,
+        until: Option<f64>,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         let until = until.map(timestamp).transpose()?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
-            let wire = inbox.close_contact_until(member, until, &wrapping, context, |_, _| Ok(()))?;
+            let wire =
+                inbox.close_contact_until(member, until, &wrapping, context, |_, _| Ok(()))?;
             Ok((wire.clone(), vec![wire]))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = initiateContact)]
     #[allow(clippy::too_many_arguments)]
-    pub async fn initiate_contact(&mut self, introduction_id: &[u8], response_deadline: f64, max_intro_bytes: f64,
-        key: &[u8], context: &[u8], persist: Function,
+    pub async fn initiate_contact(
+        &mut self,
+        introduction_id: &[u8],
+        response_deadline: f64,
+        max_intro_bytes: f64,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
     ) -> Result<Vec<u8>, JsValue> {
-        let introduction_id: &[u8; 32] = introduction_id.try_into().map_err(|_| js_error(Error::Admission))?;
+        let introduction_id: &[u8; 32] = introduction_id
+            .try_into()
+            .map_err(|_| js_error(Error::Admission))?;
         let policy = contact_policy(response_deadline, max_intro_bytes)?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
-            let wire = inbox.initiate_contact(member, introduction_id, policy, &wrapping, context, |_, _| Ok(()))?;
+            let wire = inbox.initiate_contact(
+                member,
+                introduction_id,
+                policy,
+                &wrapping,
+                context,
+                |_, _| Ok(()),
+            )?;
             Ok((wire.clone(), vec![wire]))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = consentContact)]
-    pub async fn consent_contact(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+    pub async fn consent_contact(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             let wire = inbox.consent_contact(member, &wrapping, context, |_, _| Ok(()))?;
             Ok((wire.clone(), vec![wire]))
-        }).await
+        })
+        .await
     }
 
     /// persist(checkpoint, outboundFrames) must atomically commit both and resolve
@@ -588,28 +785,52 @@ impl BrowserInbox {
     /// the pending checkpoint is durable; it resolves accepted/rejected/pending.
     #[allow(clippy::too_many_arguments)]
     pub async fn accept(
-        &mut self, welcome: &[u8], recipient_redemption: Option<Vec<u8>>,
-        key: &[u8], context: &[u8], persist: Function, redeem: Function,
+        &mut self,
+        welcome: &[u8],
+        recipient_redemption: Option<Vec<u8>>,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+        redeem: Function,
     ) -> Result<String, JsValue> {
         let key = wrapping_key(key)?;
         let recipient_redemption = recipient_redemption.map(Zeroizing::new);
         let mut candidate = self.duplicate(&key, context)?;
         let mut checkpoint = None;
         let mut request = None;
-        let result = candidate.inbox.accept(
-            &mut candidate.member, welcome, recipient_redemption.as_ref().map(|bytes| bytes.as_slice()), &key, context,
-            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
-            |bytes| { request = Some(Zeroizing::new(bytes.to_vec())); Redemption::Indeterminate },
-        ).map_err(js_error)?;
+        let result = candidate
+            .inbox
+            .accept(
+                &mut candidate.member,
+                welcome,
+                recipient_redemption.as_ref().map(|bytes| bytes.as_slice()),
+                &key,
+                context,
+                |bytes| {
+                    checkpoint = Some(bytes.to_vec());
+                    Ok(())
+                },
+                |bytes| {
+                    request = Some(Zeroizing::new(bytes.to_vec()));
+                    Redemption::Indeterminate
+                },
+            )
+            .map_err(js_error)?;
         if let Some(checkpoint) = checkpoint {
             persist_browser(&persist, &checkpoint, &[]).await?;
             *self = candidate;
         }
-        let Some(request) = request else { return Ok(acceptance_name(result)); };
+        let Some(request) = request else {
+            return Ok(acceptance_name(result));
+        };
         // Failed/ambiguous redemption keeps the exact durable pending attempt.
-        let outcome = match redeem.call1(&JsValue::UNDEFINED, &Uint8Array::from(request.as_slice())) {
+        let outcome = match redeem.call1(&JsValue::UNDEFINED, &Uint8Array::from(request.as_slice()))
+        {
             Ok(value) => match value.dyn_into::<Promise>() {
-                Ok(promise) => JsFuture::from(promise).await.ok().and_then(|v| v.as_string()),
+                Ok(promise) => JsFuture::from(promise)
+                    .await
+                    .ok()
+                    .and_then(|v| v.as_string()),
                 Err(_) => None,
             },
             Err(_) => None,
@@ -623,11 +844,24 @@ impl BrowserInbox {
         let mut checkpoint = None;
         // The first phase already durably stored this intent. This callback is
         // only the observed result; it performs no second external redemption.
-        let result = candidate.inbox.accept(
-            &mut candidate.member, welcome, None, &key, context,
-            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
-            |_| match outcome { Redemption::Accepted => Redemption::Accepted, _ => Redemption::Rejected },
-        ).map_err(js_error)?;
+        let result = candidate
+            .inbox
+            .accept(
+                &mut candidate.member,
+                welcome,
+                None,
+                &key,
+                context,
+                |bytes| {
+                    checkpoint = Some(bytes.to_vec());
+                    Ok(())
+                },
+                |_| match outcome {
+                    Redemption::Accepted => Redemption::Accepted,
+                    _ => Redemption::Rejected,
+                },
+            )
+            .map_err(js_error)?;
         if let Some(checkpoint) = checkpoint {
             persist_browser(&persist, &checkpoint, &[]).await?;
             *self = candidate;
@@ -636,56 +870,99 @@ impl BrowserInbox {
     }
 
     #[wasm_bindgen(js_name = blockMemberUntil)]
-    pub async fn block_member_until(&mut self, peer: &str, until: Option<f64>, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+    pub async fn block_member_until(
+        &mut self,
+        peer: &str,
+        until: Option<f64>,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<(), JsValue> {
         let until = until.map(timestamp).transpose()?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             inbox.block_member_until(peer, until, member, &wrapping, context, |_| Ok(()))?;
             Ok(((), Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = setBlocked)]
-    pub async fn set_blocked(&mut self, peer: &str, blocked: bool, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+    pub async fn set_blocked(
+        &mut self,
+        peer: &str,
+        blocked: bool,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<(), JsValue> {
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             inbox.set_blocked(peer, blocked, member, &wrapping, context, |_| Ok(()))?;
             Ok(((), Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = cancelPending)]
-    pub async fn cancel_pending(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+    pub async fn cancel_pending(
+        &mut self,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<(), JsValue> {
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             inbox.cancel_pending(member, &wrapping, context, |_| Ok(()))?;
             Ok(((), Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = exportContactSync)]
     pub fn export_contact_sync(&self) -> Result<Vec<u8>, JsValue> {
-        self.inbox.export_contact_sync(&self.member).map_err(js_error)
+        self.inbox
+            .export_contact_sync(&self.member)
+            .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = mergeContactSync)]
-    pub async fn merge_contact_sync(&mut self, payload: &[u8], key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+    pub async fn merge_contact_sync(
+        &mut self,
+        payload: &[u8],
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<(), JsValue> {
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             inbox.merge_contact_sync(payload, member, &wrapping, context, |_| Ok(()))?;
             Ok(((), Vec::new()))
-        }).await
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = renewDeviceAdmission)]
-    pub async fn renew_device_admission(&mut self, grant: &str, authorization: &str, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
-        if grant.len() > MAX_WIRE_BYTES || authorization.len() > MAX_WIRE_BYTES { return Err(js_error(Error::Admission)); }
-        let grant: AdmissionGrant = serde_json::from_str(grant).map_err(|_| js_error(Error::Admission))?;
-        let authorization: DeviceAuthorization = serde_json::from_str(authorization).map_err(|_| js_error(Error::Admission))?;
+    pub async fn renew_device_admission(
+        &mut self,
+        grant: &str,
+        authorization: &str,
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
+        if grant.len() > MAX_WIRE_BYTES || authorization.len() > MAX_WIRE_BYTES {
+            return Err(js_error(Error::Admission));
+        }
+        let grant: AdmissionGrant =
+            serde_json::from_str(grant).map_err(|_| js_error(Error::Admission))?;
+        let authorization: DeviceAuthorization =
+            serde_json::from_str(authorization).map_err(|_| js_error(Error::Admission))?;
         self.update(key, context, &persist, |_, member| {
             let wire = member.renew_device_admission(grant, authorization, |_, _| Ok(()))?;
             Ok((wire.clone(), vec![wire]))
-        }).await
+        })
+        .await
     }
 }
 
@@ -731,7 +1008,9 @@ impl BrowserReceived {
         match &self.received {
             Received::Text(message) => Some(message.member_id.clone()),
             Received::Bytes(message) => Some(message.member_id.clone()),
-            Received::MembershipChanged | Received::ContactClosed | Received::ContactPolicyChanged => None,
+            Received::MembershipChanged
+            | Received::ContactClosed
+            | Received::ContactPolicyChanged => None,
         }
     }
 
@@ -741,7 +1020,9 @@ impl BrowserReceived {
         match &self.received {
             Received::Text(message) => message.text.as_bytes().to_vec(),
             Received::Bytes(message) => message.bytes.clone(),
-            Received::MembershipChanged | Received::ContactClosed | Received::ContactPolicyChanged => Vec::new(),
+            Received::MembershipChanged
+            | Received::ContactClosed
+            | Received::ContactPolicyChanged => Vec::new(),
         }
     }
 
