@@ -22,7 +22,8 @@ length without waiting for FIN, and keeps the caller's abort active through the
 refusal body. Each rejected CONNECT releases its own KPS stream. Run 64 exposed
 the upstream bug: the gateway returned non-relay 403 and the canary saw zero TCP
 connections, but its browser client hung waiting for EOF on the kept-open stream.
-The correction includes parser regressions; their execution is still pending.
+Crow run 66 at cmsg `6dfadad9af` passed all 52 browser parser tests and the
+actual WebRTC/KPS non-relay 403 with zero canary connections.
 
 ## Security review boundary
 
@@ -166,6 +167,14 @@ disabled with `path_rules.ipv4_subnet_family_prefix = 33` and its IPv6 value
 flat RSA identity strings. Fallback `rsa_identity`, unpadded standard-base64
 `ed_identity` and `orports` come from the generated relay keys, not invented
 fixture identities. Keep HSDir parameters consistent with the test consensus.
+In particular, C Tor's `TestingTorNetwork` internally changes `hsdir_interval`
+without advertising that change in the consensus parameters. The fixture now
+uses `chutney.arti.config.tor_config(network)["override_net_params"]` from the
+pinned source. Its 20-second voting interval derives an eight-minute onion
+directory period; leaving Arti at the public-network 1440-minute default is
+incompatible. The public signed consensus and this derivation are retained
+before browser execution, including on later failure. This correction still
+needs its runtime check.
 
 Run the pinned gateway as a disposable test child using explicit configuration,
 `run --no-sync`, a temporary synthetic KPS identity and
@@ -217,8 +226,11 @@ requires the real KPS gateway to reject a CONNECT to an owned non-relay TCP
 canary with 403 while the canary records zero connections. It also requires
 the actual Wasm onion API to reject IP, URL, malformed onion and injected route
 inputs. The build runs the gateway's existing tunnel validation/resource tests
-and browser parser tests, preserving their output. Run 64 passed the native
-gateway tests; complete browser route-boundary assertions are still pending.
+and browser parser tests, preserving their output. Run 66 passed the native
+gateway tests, all 52 browser parser tests, the real non-relay canary assertion,
+and actual Wasm rejection of the malformed route inputs. It established working
+introduction circuits, then timed out with the descriptor publisher still
+bootstrapping. Browser onion reachability remains unverified.
 An independent gateway assertion failure is retained in the runtime evidence
 while service diagnostics continue; it still fails the overall result.
 

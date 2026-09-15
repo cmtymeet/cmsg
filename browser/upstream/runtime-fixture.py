@@ -5,6 +5,7 @@ Run only on a CI worker with the pinned Chutney source and isolated tool deps.
 No host service or public directory authority participates in this fixture.
 """
 import dataclasses
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -190,9 +191,41 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
         consensus = nodes[-1].dir / "cached-microdesc-consensus"
         if not consensus.is_file():
             raise RuntimeError("fixture has no signed microdescriptor consensus")
+        # C Tor's TestingTorNetwork mode derives the onion-directory time period
+        # from the voting interval without publishing that override in params.
+        # Use the exact pinned Chutney generator's Arti override, not the public
+        # network default or an independently chosen test value.
+        from chutney.arti.config import tor_config
+        net_overrides = tor_config(network)["override_net_params"]
+        if set(net_overrides) != {"hsdir_interval"} or type(net_overrides["hsdir_interval"]) is not int \
+                or not 5 <= net_overrides["hsdir_interval"] <= 14400:
+            raise RuntimeError("unsupported Chutney onion-directory interval derivation")
+        if consensus.stat().st_size > 2 * 1024 * 1024:
+            raise RuntimeError("synthetic consensus exceeds artifact bound")
+        consensus_bytes = consensus.read_bytes()
+        consensus_lines = consensus_bytes.decode("ascii").splitlines()
+        hsdir_relays = sum(line.startswith("s ") and "HSDir" in line.split() for line in consensus_lines)
+        if hsdir_relays == 0:
+            raise RuntimeError("synthetic consensus has no onion directories")
+        (artifact / "consensus-microdesc-start.txt").write_bytes(consensus_bytes)
+        (artifact / "fixture-provenance.json").write_text(json.dumps({
+            "chutneyRevision": CHUTNEY_REVISION, "authorities": 4, "guardRelays": 20,
+            "exitRelays": 2, "nativeClients": 1, "vanguards": "full", "synthetic": True,
+            "torVersion": subprocess.check_output([os.environ["TOR_BIN"], "--version"], text=True).strip(),
+            "artiNetOverrides": net_overrides,
+            "netOverrideSource": "pinned chutney.arti.config.tor_config(network)",
+            "votingIntervalSeconds": network.v3_auth_voting_interval_seconds,
+            "hsdirFormula": "12 rounds * 2 phases * votingIntervalSeconds / 60 minutes",
+            "consensusSha256": hashlib.sha256(consensus_bytes).hexdigest(),
+            "hsdirRelayCount": hsdir_relays,
+            "consensusTiming": [line for line in consensus_lines if line.startswith((
+                "valid-after ", "fresh-until ", "valid-until ", "voting-delay ", "params "))],
+            "sharedRandomCurrentPresent": any(line.startswith("shared-rand-current-value ") for line in consensus_lines),
+            "sharedRandomPreviousPresent": any(line.startswith("shared-rand-previous-value ") for line in consensus_lines),
+        }, indent=2) + "\n")
         gateway_data = temporary / "gateway"
         gateway_data.mkdir()
-        shutil.copyfile(consensus, gateway_data / "consensus-microdesc.txt")
+        (gateway_data / "consensus-microdesc.txt").write_bytes(consensus_bytes)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.bind(("127.0.0.1", 0))
             gateway_port = udp.getsockname()[1]
@@ -221,7 +254,7 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
             "tor_network": {"authorities": {"v3idents": authorities, "uploads": [], "downloads": [], "votes": []},
                             "fallback_caches": fallbacks},
             "path_rules": {"ipv4_subnet_family_prefix": 33, "ipv6_subnet_family_prefix": 129},
-            "override_net_params": {}, "vanguards": {"mode": "full"}}}
+            "override_net_params": net_overrides, "vanguards": {"mode": "full"}}}
         fixture_path = temporary / "fixture.json"
         fixture_path.write_text(json.dumps(fixture))
         socks_ip, socks_port = next(iter(nodes[-1].socksport_endpoints()))
@@ -233,11 +266,6 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
         result = driver.wait(timeout=1000)
         if result != 0:
             raise RuntimeError("real browser Tor contract failed")
-        (artifact / "fixture-provenance.json").write_text(json.dumps({
-            "chutneyRevision": CHUTNEY_REVISION, "authorities": 4, "guardRelays": 20,
-            "exitRelays": 2, "nativeClients": 1, "vanguards": "full", "synthetic": True,
-            "torVersion": subprocess.check_output([os.environ["TOR_BIN"], "--version"], text=True).strip(),
-        }, indent=2) + "\n")
     finally:
         stop_child(driver)
         stop_child(gateway)
