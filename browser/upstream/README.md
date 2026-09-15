@@ -52,8 +52,11 @@ After the onion-client patch, `tor-js-onion-stream.patch` plus the
 to `crates/tor-js-wasm/src/onion_stream.rs` in the isolated pinned checkout.
 The client, stream and service patches applied to the exact source archives in
 Crow run 45 at cmsg `755d83b1a`. Its full service stage passed the Wasm
-compilation check and all three native ephemeral-state tests. Generated TorJS
-package validation and a network test remain pending.
+compilation check and all three native ephemeral-state tests. Crow run 52 at
+cmsg `addbe4c0f1` built the actual Wasm modules, matching generated bindings,
+TorJS TypeScript/declarations, experimental npm package and native gateway/peer.
+Its fixture stopped at Tor network readiness before browser traffic began;
+browser onion reachability remains unverified.
 The stock dependency is not enabled by the cmsg production adapter.
 
 `connectOnion(host, port, deadlineMs)` accepts only canonical checksum-valid
@@ -78,7 +81,7 @@ echo is accepted as evidence that a browser onion service is reachable.
 The `service` source stage now includes an in-memory state backend, target
 gates for filesystem replay code, one-shot ephemeral introduction ownership,
 and a bounded Arti service/stream API. Patch application is verified as above;
-the new browser runtime behavior still requires generated-binding and network tests.
+the generated package build is verified as above, while network tests remain.
 The memory store keeps at most 16 MiB of service metadata per instance and
 rejects replacement atomically when full. It exports neither raw directories
 nor state recovery. It rejects reacquisition even after all handles drop.
@@ -185,6 +188,10 @@ available in the isolated CI environment; `TOR_BIN`, `TOR_GENCERT_BIN`,
 temporary; shutdown confirms the owned processes exit before deleting state.
 The fixture explicitly selects the local Chutney launcher and loopback IPv4
 listeners, with IPv6 disabled, regardless of inherited Chutney defaults.
+Listener blocks stay outside the worker's ephemeral source-port range, read
+without changing kernel settings. Bounded startup/final diagnostics retain
+synthetic listener settings, process status and log tails; private keys and
+control authentication files are excluded.
 
 The contract uses the actual generated TorJS APIs and cmsg framing. Two browser
 clients publish different onions and exchange byte frames. A separate native

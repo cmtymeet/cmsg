@@ -36,6 +36,8 @@ async function syntheticMember() {
 }
 
 export async function runTorRuntimeContract() {
+  const progress = { testNetworkOnly: true, stage: 'initialization', passed: [] };
+  globalThis.__cmsgTorRuntime = progress;
   await init({ module_or_path: new URL('../pkg/cmsg_bg.wasm', import.meta.url) });
   const fixture = await (await fetch('/fixture.json', { cache: 'no-store' })).json();
   check(fixture.testOnly === true && fixture.arti.vanguards.mode === 'full', 'isolated full-vanguard configuration');
@@ -44,18 +46,23 @@ export async function runTorRuntimeContract() {
   const clients = [];
   const services = [];
   const framed = [];
-  const passed = [];
+  const passed = progress.passed;
   let member;
   try {
+    progress.stage = 'client-bootstrap';
     for (let i = 0; i < 2; i++) clients.push(new TorClient({ gateway: fixture.gateway,
       testNetwork: JSON.stringify(fixture.arti), storage: new storage.MemoryStorage(),
       log: new Log({ rawLog: () => {} }), logLevel: 'error' }));
     await bounded(Promise.all(clients.map(c => c.ready())), 360_000);
     passed.push('two browser Arti clients bootstrapped on isolated signed Tor network');
-    for (const client of clients) services.push(await bounded(client.hostOnion(80, 4, 60_000), 65_000));
+    for (let index = 0; index < clients.length; index++) {
+      progress.stage = `service-publication-${index}`;
+      services.push(await bounded(clients[index].hostOnion(80, 4, 60_000), 65_000));
+    }
     check(services[0].host !== services[1].host, 'distinct ephemeral onion identities');
     for (const service of services) new BrowserOnionEndpoint(service.host, service.port).free();
     passed.push('two browser-owned onion services published with full vanguards');
+    progress.stage = 'browser-onion-stream';
     const [dialled, accepted] = await bounded(Promise.all([
       clients[0].connectOnion(services[1].host, 80, 60_000), services[1].accept(60_000),
     ]), 65_000);
@@ -69,6 +76,7 @@ export async function runTorRuntimeContract() {
     left.close(); right.close();
     passed.push('actual browser onion dial/accept and bidirectional cmsg framing');
 
+    progress.stage = 'native-peer-connection';
     const incoming = services[0].accept(60_000);
     const native = fetch('/__native-peer', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ host: services[0].host, port: 80 }) }).then(async r => {
@@ -79,6 +87,7 @@ export async function runTorRuntimeContract() {
     native.catch(() => {});
     const peer = new OnionFramedStream(await bounded(incoming, 65_000), 60_000);
     framed.push(peer);
+    progress.stage = 'native-peer-mls';
     member = await syntheticMember();
     member.createGroup();
     const invitation = member.add(await peer.receive());
@@ -96,11 +105,13 @@ export async function runTorRuntimeContract() {
     check(nativeEvidence.nativeFramedStream && nativeEvidence.rootAuthorizedMlsBinaryBothDirections, 'native process evidence');
     peer.close();
     passed.push('browser/native Tor FramedStream and root-authorized MLS binary both directions, replay rejected');
+    progress.stage = 'service-cancellation';
     const pending = services[0].accept(60_000);
     services[0].close();
     const cancelled = await bounded(pending.then(() => false, () => true), 5_000);
     check(cancelled, 'service close cancels accept');
     passed.push('browser onion service close cancels pending accept');
+    progress.stage = 'complete';
     return { testNetworkOnly: true, nativePeer: nativeEvidence, passed };
   } finally {
     member?.free();

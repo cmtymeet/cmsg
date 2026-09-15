@@ -88,6 +88,7 @@ let browser;
 let browserClosed;
 let socket;
 let stderr = '';
+let browserMetadata;
 let nextId = 1;
 const pending = new Map();
 const forbiddenRequests = [];
@@ -121,6 +122,7 @@ try {
   }
   if (!port) throw new Error(`Chromium did not expose its test interface: ${stderr}`);
   const metadata = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  browserMetadata = metadata;
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const page = targets.find(target => target.type === 'page');
   if (!page) throw new Error('Chromium has no test page');
@@ -172,6 +174,25 @@ try {
     runtime: process.version, contract: result.result.value, unexpectedExternalRequests: forbiddenRequests };
   await writeFile(artifact, JSON.stringify(evidence, null, 2) + '\n');
   process.stdout.write(JSON.stringify(evidence) + '\n');
+} catch (error) {
+  let progress = null;
+  let traceTimer;
+  try {
+    if (socket?.readyState === WebSocket.OPEN) {
+      const result = await Promise.race([
+        command('Runtime.evaluate', { expression: 'globalThis.__cmsgTorRuntime ?? null', returnByValue: true }),
+        new Promise((_, reject) => { traceTimer = setTimeout(() => reject(new Error('diagnostic deadline')), 2000); }),
+      ]);
+      progress = result.result?.value ?? null;
+    }
+  } catch {} finally { clearTimeout(traceTimer); }
+  await writeFile(artifact + '.failure.json', JSON.stringify({
+    source: process.env.CI_COMMIT_SHA, testNetworkOnly: true,
+    browser: browserMetadata?.Browser, runtime: process.version, progress,
+    failure: String(error).slice(0, 8192), chromiumStderr: stderr.slice(-8000),
+    unexpectedExternalRequests: forbiddenRequests.slice(0, 16).map(url => url.slice(0, 512)),
+  }, null, 2) + '\n');
+  throw error;
 } finally {
   clearTimeout(deadline);
   if (nativeChild?.pid && nativeChild.exitCode === null && nativeChild.signalCode === null) {
