@@ -123,7 +123,7 @@ try {
   clearTimeout(deadline);
   socket?.close();
   if (browser && browser.exitCode === null) {
-    const exited = once(browser, 'exit');
+    const exited = once(browser, 'close');
     browser.kill('SIGTERM');
     const force = setTimeout(() => browser.kill('SIGKILL'), 5000);
     await exited;
@@ -131,5 +131,7 @@ try {
   }
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
-  await rm(profile, { recursive: true, force: true });
+  // Chromium's profile writers may finish just after the main process exits.
+  // Retry only this owned temporary profile; persistent failure remains fatal.
+  await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

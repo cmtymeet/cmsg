@@ -2,9 +2,10 @@
 //! JavaScript owns the UI, durable ciphertext storage and Tor transport. These
 //! bindings never call browser fetch, render messages or choose a gateway.
 use crate::{
-    Acceptance, AdmissionGrant, AdmissionTrust, Clock, ContactResolution, DeviceAuthorization, Error,
-    FirstContactPolicy, FirstContactRole, FrameCodec, Inbox, Invitation, Member, MemberIdentity,
-    OnionEndpoint, Participant, Received, Redemption, MAX_DATA_BYTES, MAX_WIRE_BYTES,
+    Acceptance, AdmissionGrant, AdmissionTrust, Clock, ContactResolution, DeviceAuthorization,
+    Error, FirstContactPolicy, FirstContactRole, FrameCodec, Inbox, Invitation, Member,
+    MemberIdentity, OnionEndpoint, Participant, Received, Redemption, MAX_DATA_BYTES,
+    MAX_WIRE_BYTES,
 };
 use js_sys::{Array, Function, Promise, Uint8Array};
 use std::sync::Arc;

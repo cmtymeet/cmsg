@@ -356,7 +356,9 @@ fn delayed_archived_resolution_is_durable_and_cannot_change_the_fresh_gate() {
 #[test]
 fn internal_contact_envelopes_cannot_escape_generic_receive_or_consume_its_keys() {
     let mut p = established();
-    for payload in [Vec::new(), vec![42; cmsg::MAX_DATA_BYTES]] {
+    assert!(p.ai.send_contact_bytes(&mut p.a, &[], &KEY, CONTEXT,
+        |_, _| panic!("strict contact requires nonempty data")).is_err());
+    for payload in [vec![0], vec![42; cmsg::MAX_DATA_BYTES]] {
         let wire = p.ai.send_contact_bytes(&mut p.a, &payload, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
         assert!(p.b.receive(&wire).is_err(), "generic byte delivery must reject internal kind 2");
         assert!(p.b.receive_control(&wire).is_err());

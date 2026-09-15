@@ -687,10 +687,12 @@ impl Member {
                         member_id,
                         bytes: body.to_vec(),
                     }),
-                    2 if allow_policy && body.len() <= MAX_WIRE_BYTES / 2 => Received::Bytes(DataMessage {
-                        member_id,
-                        bytes: body.to_vec(),
-                    }),
+                    2 if allow_policy && body.len() <= MAX_WIRE_BYTES / 2 => {
+                        Received::Bytes(DataMessage {
+                            member_id,
+                            bytes: body.to_vec(),
+                        })
+                    }
                     _ => return Err(Error::InvalidMessage),
                 }
             }
