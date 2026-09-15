@@ -50,11 +50,14 @@ not a current hosting capability or a settled persistence policy.
 After the onion-client patch, `tor-js-onion-stream.patch` plus the
 `onion_stream.rs` overlay expose actual Arti `DataStream` bytes. Copy the overlay
 to `crates/tor-js-wasm/src/onion_stream.rs` in the isolated pinned checkout.
-This draft has not yet passed patch application, compilation or a network test.
-It is not enabled by the cmsg production adapter.
+The client, stream and service patches applied to the exact source archives in
+Crow run 45 at cmsg `755d83b1a`. Compilation and a network test remain pending.
+The stock dependency is not enabled by the cmsg production adapter.
 
 `connectOnion(host, port, deadlineMs)` accepts only canonical checksum-valid
-onions. `read(maximum, deadlineMs)` returns at most 64 KiB and `write(bytes,
+onions. This initial registry permits one pending outbound connection per
+client and up to 64 established streams. `read(maximum, deadlineMs)` returns
+at most 64 KiB and `write(bytes,
 deadlineMs)` accepts at most one cmsg-sized chunk. One read and one write can
 proceed concurrently; overlapping operations in the same direction fail.
 `close()` aborts both outstanding operations and drops their stream halves.
@@ -72,7 +75,8 @@ local echo is accepted as evidence that a browser onion service is reachable.
 
 The `service` source stage now includes an in-memory state backend, target
 gates for filesystem replay code, one-shot ephemeral introduction ownership,
-and a bounded Arti service/stream API. These remain unverified source drafts.
+and a bounded Arti service/stream API. Patch application is verified as above;
+the new browser runtime behavior still requires compilation and network tests.
 The memory store keeps at most 16 MiB of service metadata per instance and
 rejects replacement atomically when full. It exports neither raw directories
 nor state recovery. It rejects reacquisition even after all handles drop.
@@ -82,7 +86,7 @@ on the existing CI workers, with the same Rust toolchain as cmsg:
 
 ```sh
 python3 /cmsg/browser/upstream/apply.py /work/tor-js /work/arti service
-cargo check --manifest-path /work/tor-js/Cargo.toml -p tor-js-wasm --target wasm32-unknown-unknown
+cargo check --manifest-path /work/tor-js/Cargo.toml -p tor-js --target wasm32-unknown-unknown
 cargo test --manifest-path /work/arti/Cargo.toml -p tor-persist --features state-dir state_dir_wasm_tests
 ```
 
@@ -116,3 +120,36 @@ identity and private contact policy are recovered separately by cmsg. Arti's
 running status and native state tests do not establish browser reachability.
 That requires genuine Tor circuits between a browser service and a separate
 native peer using the generated artifact and explicitly configured test gateway.
+
+## Isolated test network stage
+
+`test-network` adds a separate source patch after `service`. Build it with
+`--features browser-test-network`; omitting that feature fails compilation.
+This artifact requires an explicit `testNetwork` JSON option and fresh fixture
+storage in its TorJS constructor. It disables gateway bootstrap archives and
+rejects missing configuration, non-loopback fallback sockets, retained public
+authority upload/download/vote endpoints, or a vanguard mode other than `full`.
+The ephemeral keystore is still forced after reading test configuration.
+The production `service` stage has no test-network option or this module.
+
+Use at least four disposable directory authorities, twenty guard relays and
+two exits with the fixture's own signed consensus. Full vanguards keep the
+normal L2/L3 pools of four/eight. The local-only path needs subnet exclusions
+disabled with `path_rules.ipv4_subnet_family_prefix = 33` and its IPv6 value
+`129`; changing these is a test-network adaptation. Authority `v3idents` are
+flat RSA identity strings. Fallback `rsa_identity`, unpadded standard-base64
+`ed_identity` and `orports` come from the generated relay keys, not invented
+fixture identities. Keep HSDir parameters consistent with the test consensus.
+
+Run the pinned gateway as a disposable test child using explicit configuration,
+`run --no-sync`, a temporary synthetic KPS identity and
+`TOR_JS_GATEWAY_ALLOW_LOCAL_TARGETS=1`. Its relay allowlist must contain only
+the fixture's loopback ORPorts; this flag does not bypass the allowlist. Do not
+run the gateway install/uninstall commands. Destroy the fixture and its private
+keys after the run. All code, keys, relay data and gateway state belong to that
+one test; existing host services are not part of the fixture.
+
+This stage tests real Tor cryptography, circuit construction and stream
+interoperability in an isolated network. An observer controlling every test
+relay is inherent to the fixture, so the result is functional evidence and
+cannot establish protection against that observer or public-network capacity.

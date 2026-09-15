@@ -8,12 +8,18 @@
     "rawStreamStage": {
       "patch": "tor-js-onion-stream.patch",
       "overlay": { "onion_stream.rs": "crates/tor-js-wasm/src/onion_stream.rs" },
-      "status": "source draft; apply/build/browser/native Tor round-trip unverified"
+      "status": "source application verified Crow run45 at cmsg755d83b1a; build/browser/native Tor round-trip unverified"
     },
     "serviceStage": {
       "patch": "tor-js-onion-service.patch",
       "overlay": { "onion_service.rs": "crates/tor-js-wasm/src/onion_service.rs" },
-      "status": "source draft; apply/build/browser/native Tor round-trip unverified"
+      "status": "source application verified Crow run45 at cmsg755d83b1a; build/browser/native Tor round-trip unverified"
+    },
+    "testNetworkStage": {
+      "patch": "tor-js-test-network.patch",
+      "overlay": { "test_network.rs": "crates/tor-js-wasm/src/test_network.rs" },
+      "requiredFeature": "browser-test-network",
+      "status": "isolated CI only; not a production networking API; unverified"
     }
   },
   "arti": {

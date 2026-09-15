@@ -130,6 +130,8 @@ impl ContactDirective {
         self.validate_shape(verifier, at)?;
         if verifier.verify_private_identity_credential(
             &self.identity_credential, &self.device_public_key, at,
+        )? != self.owner_id || verifier.verify_private_identity_credential(
+            &self.identity_credential, &self.device_public_key, self.issued_at,
         )? != self.owner_id {
             return Err(Error::Admission);
         }
@@ -197,6 +199,8 @@ impl ContactResolution {
     pub(crate) fn verify_device_signature(&self, verifier: &Member, at: u64) -> Result<(), Error> {
         if self.identity_credential.len() > 8192 || verifier.verify_private_identity_credential(
             &self.identity_credential, &self.device_public_key, at,
+        )? != self.responder_id || verifier.verify_private_identity_credential(
+            &self.identity_credential, &self.device_public_key, self.issued_at,
         )? != self.responder_id {
             return Err(Error::Admission);
         }
@@ -658,4 +662,107 @@ fn preflight_bytes(p: &ReleasePreflight) -> Result<Vec<u8>, Error> {
         p.expires_at,
     ]))
     .map_err(|_| Error::Admission)
+}
+
+#[cfg(test)]
+mod backdated_contact_tests {
+    use super::*;
+    use crate::{AdmissionTrust, Clock, MemberIdentity};
+    use std::sync::Arc;
+
+    struct FixedTime;
+
+    impl Clock for FixedTime {
+        fn now(&self) -> Result<u64, Error> {
+            Ok(100)
+        }
+    }
+
+    fn device(grant_start: u64, device_start: u64) -> Member {
+        let issuer = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+        let trust = AdmissionTrust {
+            community_id: "synthetic-backdated-contact".into(),
+            policy_digest: B64.encode(&[42; 32]),
+            issuer_public_key: issuer.verifying_key().to_bytes(),
+        };
+        let root = MemberIdentity::new(&trust.community_id).unwrap();
+        let mut member = Member::new_with_clock(Arc::new(FixedTime)).unwrap();
+        let device_key = member.chat_public_key();
+        let mut grant = AdmissionGrant {
+            version: 1,
+            issuer_key_id: B64.encode(&Sha256::digest(trust.issuer_public_key)),
+            community_id: trust.community_id.clone(),
+            member_id: root.member_id().to_owned(),
+            chat_public_key: B64.encode(&device_key),
+            policy_digest: trust.policy_digest.clone(),
+            issued_at: grant_start,
+            expires_at: 1000,
+            signature: String::new(),
+        };
+        let bytes = serde_json::to_vec(&serde_json::json!([
+            "cvld.admission.v1", grant.issuer_key_id, grant.community_id,
+            grant.member_id, grant.chat_public_key, grant.policy_digest,
+            grant.issued_at, grant.expires_at,
+        ])).unwrap();
+        grant.signature = B64.encode(&ed25519_dalek::Signer::sign(&issuer, &bytes).to_bytes());
+        let authorization = root.authorize_device(&device_key, device_start, 1000).unwrap();
+        member.bind_device_admission(grant, trust, authorization, 100).unwrap();
+        member
+    }
+
+    // Check the malicious replacement is a real signature over the backdated
+    // payload. Rejection must come from credential time bounds, not tampering.
+    fn assert_signature_valid(member: &Member, bytes: &[u8], signature: &[u8]) {
+        let key: [u8; 32] = member.chat_public_key().try_into().unwrap();
+        VerifyingKey::from_bytes(&key).unwrap().verify_strict(
+            bytes, &Signature::from_slice(signature).unwrap(),
+        ).unwrap();
+    }
+
+    #[test]
+    fn current_peer_rejects_authentically_signed_directive_before_credential_validity() {
+        let peer = device(1, 1);
+        let peer_id = peer.member_id().unwrap();
+        // Each credential's valid-from bound must be checked independently.
+        for (grant_start, device_start) in [(80, 80), (1, 80), (80, 1)] {
+            let owner = device(grant_start, device_start);
+            let owner_id = owner.member_id().unwrap();
+            let mut directive = owner.sign_contact_directive(
+                &peer_id, 1, &[0; 32], &[0; 32],
+                ContactDirectiveKind::FreshInitiative, &[7; 32], &owner_id,
+                b"synthetic-fresh-group",
+                Some(crate::FirstContactPolicy { response_deadline: 500, max_intro_bytes: 512 }),
+                None,
+            ).unwrap();
+            peer.verify_contact_directive(&directive, &owner_id).unwrap();
+            directive.issued_at = 79;
+            let bytes = directive.signing_bytes().unwrap();
+            directive.signature = owner.signer.sign(&bytes).unwrap();
+            assert_signature_valid(&owner, &bytes, &directive.signature);
+            assert!(matches!(peer.verify_contact_directive(&directive, &owner_id), Err(Error::Admission)));
+        }
+    }
+
+    #[test]
+    fn current_peer_rejects_authentically_signed_resolution_before_credential_validity() {
+        let peer = device(1, 1);
+        let peer_id = peer.member_id().unwrap();
+        let introduction_id = [7; 32];
+        for (grant_start, device_start) in [(80, 80), (1, 80), (80, 1)] {
+            let owner = device(grant_start, device_start);
+            let owner_id = owner.member_id().unwrap();
+            for kind in [ContactResolutionKind::Answered, ContactResolutionKind::ClosedForever] {
+                let mut receipt = owner.sign_contact_resolution(&peer_id, &introduction_id, kind).unwrap();
+                peer.verify_contact_resolution(&receipt, &owner_id, &introduction_id).unwrap();
+                receipt.issued_at = 79;
+                let bytes = receipt.signing_bytes().unwrap();
+                receipt.signature = owner.signer.sign(&bytes).unwrap();
+                assert_signature_valid(&owner, &bytes, &receipt.signature);
+                assert!(matches!(
+                    peer.verify_contact_resolution(&receipt, &owner_id, &introduction_id),
+                    Err(Error::Admission),
+                ));
+            }
+        }
+    }
 }

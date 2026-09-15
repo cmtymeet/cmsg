@@ -68,8 +68,8 @@ def main():
         stage = sys.argv[3]
     else:
         raise SystemExit("usage: apply.py TOR_JS_CHECKOUT ARTI_CHECKOUT STAGE; or apply.py --from-archives TOR_JS_TAR ARTI_TAR NEW_OUTPUT_DIR STAGE")
-    if stage not in {"client", "streams", "service"}:
-        raise SystemExit("stage must be client, streams or service")
+    if stage not in {"client", "streams", "service", "test-network"}:
+        raise SystemExit("stage must be client, streams, service or test-network")
     if archived:
         tor_js, arti = from_archives(sys.argv[2:4], sys.argv[4], manifest)
     else:
@@ -82,15 +82,18 @@ def main():
 
     patches = [(tor_js, "tor-js-onion-client.patch")]
     overlays = []
-    if stage in {"streams", "service"}:
+    if stage in {"streams", "service", "test-network"}:
         patches.append((tor_js, "tor-js-onion-stream.patch"))
         overlays.append(("onion_stream.rs", tor_js / "crates/tor-js-wasm/src/onion_stream.rs"))
-    if stage == "service":
+    if stage in {"service", "test-network"}:
         patches.extend([(arti, "arti-browser-service.patch"), (tor_js, "tor-js-onion-service.patch")])
         overlays.extend([
             ("state_dir_wasm.rs", arti / "crates/tor-persist/src/state_dir_wasm.rs"),
             ("onion_service.rs", tor_js / "crates/tor-js-wasm/src/onion_service.rs"),
         ])
+    if stage == "test-network":
+        patches.append((tor_js, "tor-js-test-network.patch"))
+        overlays.append(("test_network.rs", tor_js / "crates/tor-js-wasm/src/test_network.rs"))
     for checkout, patch in patches:
         git(checkout, "apply", "--check", str(source / patch))
         git(checkout, "apply", str(source / patch))
@@ -121,6 +124,7 @@ def main():
     inputs = [patch for _, patch in patches] + [overlay for overlay, _ in overlays]
     print(json.dumps({
         "stage": stage,
+        "testNetworkOnly": stage == "test-network",
         "sourceMode": "verified git archives" if archived else "pinned git checkouts",
         "torJsRevision": manifest["torJs"]["revision"],
         "artiRevision": manifest["arti"]["revision"],

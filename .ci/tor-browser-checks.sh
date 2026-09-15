@@ -3,7 +3,7 @@ set -euo pipefail
 rustc --version
 cargo --version
 python3 --version
-case "$TOR_STAGE" in client|streams|service) ;; *) exit 2 ;; esac
+case "$TOR_STAGE" in client|streams|service|test-network) ;; *) exit 2 ;; esac
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/tor-$TOR_STAGE"
 mkdir -p "$artifact_dir"
 scratch="$(mktemp -d)"
@@ -29,9 +29,11 @@ cargo update --manifest-path "$torjs_manifest" --workspace
 cp "$scratch/source/tor-js/Cargo.lock" "$artifact_dir/tor-js-Cargo.lock"
 date -u +%FT%TZ > "$artifact_dir/dependency-resolution-time.txt"
 result=0
+tor_features=()
+if test "$TOR_STAGE" = test-network; then tor_features=(--features browser-test-network); fi
 timeout 1800 cargo check --locked --manifest-path "$torjs_manifest" \
-  -p tor-js --target wasm32-unknown-unknown || result=$?
-if test "$TOR_STAGE" = service; then
+  -p tor-js --target wasm32-unknown-unknown "${tor_features[@]}" || result=$?
+if test "$TOR_STAGE" = service || test "$TOR_STAGE" = test-network; then
   cargo update --manifest-path "$arti_manifest" --workspace
   cp "$scratch/source/arti/Cargo.lock" "$artifact_dir/arti-Cargo.lock"
   timeout 1800 cargo test --locked --manifest-path "$arti_manifest" \
