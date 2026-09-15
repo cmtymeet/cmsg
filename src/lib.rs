@@ -40,7 +40,7 @@ pub use lifecycle::Clock;
 pub use member::{DataMessage, Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;
 pub use release::{
-    ContactResolution, ContactResolutionKind,
+    ContactDirective, ContactDirectiveKind, ContactResolution, ContactResolutionKind,
     DirectionalReceiveAuthorization, DirectionalSendAuthorization, ReleaseAuthorizationTiming,
     ReleaseContext, ReleasePeer, ReleasePreflight, ReleaseReceipt,
 };

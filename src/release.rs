@@ -13,6 +13,134 @@ use sha2::{Digest, Sha256};
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_AUTHORIZATION_SECONDS: u64 = 300;
 
+/// An owner changes only their own side of a contact restriction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContactDirectiveKind {
+    Block,
+    FreshInitiative,
+}
+
+/// Private, root-authorized contact control. The Inbox validates its predecessor
+/// chain and commits it with the encrypted journal before using it. A signature
+/// alone neither reopens a contact nor earns allowance.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContactDirective {
+    pub community_id: String,
+    pub owner_id: String,
+    pub peer_id: String,
+    pub revision: u64,
+    pub previous_digest: [u8; 32],
+    pub peer_digest: [u8; 32],
+    pub kind: ContactDirectiveKind,
+    pub introduction_id: [u8; 32],
+    pub initiator_id: String,
+    pub group_id: Vec<u8>,
+    pub policy: Option<crate::FirstContactPolicy>,
+    pub until: Option<u64>,
+    pub issued_at: u64,
+    pub device_public_key: Vec<u8>,
+    pub identity_credential: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+impl std::fmt::Debug for ContactDirective {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ContactDirective([redacted])")
+    }
+}
+
+impl Drop for ContactDirective {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.community_id.zeroize();
+        self.owner_id.zeroize();
+        self.peer_id.zeroize();
+        self.previous_digest.zeroize();
+        self.peer_digest.zeroize();
+        self.introduction_id.zeroize();
+        self.initiator_id.zeroize();
+        self.group_id.zeroize();
+        self.identity_credential.zeroize();
+    }
+}
+
+impl ContactDirective {
+    fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
+        let policy = self.policy.map(|p| (p.response_deadline, p.max_intro_bytes));
+        serde_json::to_vec(&serde_json::json!([
+            "cmsg.contact-directive.v1", self.community_id, self.owner_id,
+            self.peer_id, self.revision, B64.encode(&self.previous_digest),
+            B64.encode(&self.peer_digest), self.kind, B64.encode(&self.introduction_id),
+            self.initiator_id, B64.encode(&self.group_id), policy, self.until,
+            self.issued_at, B64.encode(&self.device_public_key),
+            B64.encode(&Sha256::digest(&self.identity_credential)),
+        ])).map_err(|_| Error::InvalidMessage)
+    }
+
+    /// Stable chain identifier; callers must authenticate the directive before
+    /// accepting the digest as a predecessor. Signing encodings are canonical.
+    pub fn digest(&self) -> Result<[u8; 32], Error> {
+        let mut hash = Sha256::new();
+        hash.update(b"cmsg.contact-directive-digest.v1\0");
+        hash.update(&*zeroize::Zeroizing::new(self.signing_bytes()?));
+        Ok(hash.finalize().into())
+    }
+
+    fn validate_shape(&self, verifier: &Member, at: u64) -> Result<(), Error> {
+        if self.community_id != verifier.trust.as_ref().ok_or(Error::Admission)?.community_id
+            || !crate::admission::valid_member_id(&self.owner_id)
+            || !crate::admission::valid_member_id(&self.peer_id)
+            || self.owner_id == self.peer_id
+            || self.revision == 0 || self.revision > MAX_SAFE_INTEGER
+            || self.issued_at == 0 || self.issued_at > at || self.issued_at > MAX_SAFE_INTEGER
+            || self.group_id.len() > 256
+            || self.device_public_key.len() != 32
+            || self.identity_credential.len() > 8192
+            || (self.revision == 1) != (self.previous_digest == [0; 32])
+        {
+            return Err(Error::Admission);
+        }
+        match self.kind {
+            ContactDirectiveKind::Block => {
+                if self.policy.is_some() || !self.initiator_id.is_empty()
+                    || self.until.is_some_and(|until| until <= self.issued_at || until > MAX_SAFE_INTEGER)
+                {
+                    return Err(Error::Admission);
+                }
+            }
+            ContactDirectiveKind::FreshInitiative => {
+                let policy = self.policy.ok_or(Error::Admission)?;
+                if self.until.is_some() || self.introduction_id == [0; 32] || self.group_id.is_empty()
+                    || (self.initiator_id != self.owner_id && self.initiator_id != self.peer_id)
+                    || policy.response_deadline <= at || policy.response_deadline > MAX_SAFE_INTEGER
+                    || policy.max_intro_bytes == 0 || policy.max_intro_bytes > crate::MAX_DATA_BYTES
+                {
+                    return Err(Error::Admission);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Historical calls are for authenticated saved journals only. New network
+    /// input must use Member::verify_contact_directive with its current clock.
+    pub(crate) fn verify_device_signature(&self, verifier: &Member, at: u64) -> Result<(), Error> {
+        self.validate_shape(verifier, at)?;
+        if verifier.verify_private_identity_credential(
+            &self.identity_credential, &self.device_public_key, at,
+        )? != self.owner_id {
+            return Err(Error::Admission);
+        }
+        let key: [u8; 32] = self.device_public_key.as_slice().try_into().map_err(|_| Error::Admission)?;
+        VerifyingKey::from_bytes(&key).map_err(|_| Error::Admission)?.verify_strict(
+            &zeroize::Zeroizing::new(self.signing_bytes()?),
+            &Signature::from_slice(&self.signature).map_err(|_| Error::Admission)?,
+        ).map_err(|_| Error::Admission)
+    }
+}
+
 /// A peer's authenticated decision. An answer claim is not proof that a human
 /// read a message, and this receipt alone never authorizes an operator credit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +286,54 @@ pub struct ReleasePreflight {
 }
 
 impl Member {
+    /// Create one fixed-purpose private contact directive. The caller must use
+    /// Inbox to validate and durably extend the owner chain before transmitting.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_contact_directive(
+        &self,
+        peer_id: &str,
+        revision: u64,
+        previous_digest: &[u8; 32],
+        peer_digest: &[u8; 32],
+        kind: ContactDirectiveKind,
+        introduction_id: &[u8; 32],
+        initiator_id: &str,
+        group_id: &[u8],
+        policy: Option<crate::FirstContactPolicy>,
+        until: Option<u64>,
+    ) -> Result<ContactDirective, Error> {
+        if self.device_authorization()?.is_none() { return Err(Error::Admission); }
+        let mut directive = ContactDirective {
+            community_id: self.trust.as_ref().ok_or(Error::Admission)?.community_id.clone(),
+            owner_id: self.member_id()?, peer_id: peer_id.to_owned(), revision,
+            previous_digest: *previous_digest, peer_digest: *peer_digest, kind,
+            introduction_id: *introduction_id, initiator_id: initiator_id.to_owned(),
+            group_id: group_id.to_vec(), policy, until, issued_at: self.authorization_time()?,
+            device_public_key: self.chat_public_key(),
+            identity_credential: self.private_identity_credential()?, signature: Vec::new(),
+        };
+        directive.validate_shape(self, directive.issued_at)?;
+        directive.signature = self.signer.sign(&zeroize::Zeroizing::new(directive.signing_bytes()?))
+            .map_err(|_| Error::Admission)?;
+        Ok(directive)
+    }
+
+    /// Verify a current peer directive for this community and exact contact pair.
+    /// Inbox supplies chain, consent, expiry and replay enforcement separately.
+    pub fn verify_contact_directive(
+        &self,
+        directive: &ContactDirective,
+        expected_owner: &str,
+    ) -> Result<(), Error> {
+        let own_id = self.member_id()?;
+        if self.device_authorization()?.is_none() || directive.owner_id != expected_owner
+            || !((directive.owner_id == own_id) ^ (directive.peer_id == own_id))
+        {
+            return Err(Error::Admission);
+        }
+        directive.verify_device_signature(self, self.authorization_time()?)
+    }
+
     /// Sign a private answer/close declaration using this root-authorized device.
     /// Hosts must durably save the decision and its outbound receipt together
     /// before transmission. Signing alone does not apply a local closure.
