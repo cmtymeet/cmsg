@@ -115,7 +115,7 @@ async function checkpointStore() {
 }
 
 export async function runBrowserContract() {
-  await init();
+  await init({ module_or_path: new URL('./pkg/cmsg_bg.wasm', import.meta.url) });
   const passed = [];
   const issuer = await authority();
   const alice = await member(issuer);

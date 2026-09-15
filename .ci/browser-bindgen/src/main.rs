@@ -9,6 +9,7 @@ fn main() -> anyhow::Result<()> {
     wasm_bindgen_cli_support::Bindgen::new()
         .input_path(std::path::PathBuf::from(input))
         .web(true)?
+        .omit_default_module_path(false)
         .out_name(name)
         .typescript(true)
         .generate(std::path::PathBuf::from(output))?;

@@ -3,13 +3,6 @@ set -euo pipefail
 rustc --version
 cargo --version
 node --version
-for tool in wasm-bindgen wasm-bindgen-test-runner chromium chromium-browser google-chrome chromedriver firefox geckodriver; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf 'Browser prerequisite %s: present\n' "$tool"
-  else
-    printf 'Browser prerequisite %s: unavailable\n' "$tool"
-  fi
-done
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/${CHECK_SUITE:-core}"
 mkdir -p "$artifact_dir"
 case "${CHECK_SUITE:-core}" in
@@ -39,10 +32,14 @@ if test "${CHECK_SUITE:-core}" = browser; then
   timeout 1200 cargo run --locked --manifest-path .ci/browser-bindgen/Cargo.toml -- \
     "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg cmsg
   export BROWSER_BIN BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
-  timeout 300 node .ci/browser-check.mjs
+  timeout 300 node .ci/browser-check.mjs || result=$?
   tar --create --file "$artifact_dir/browser-package.tar" browser/pkg browser/index.mjs browser/package.json
-  (cd "$artifact_dir" && sha256sum Cargo.lock browser-helper-Cargo.lock browser-package.tar browser-evidence.json > SHA256SUMS)
-  exit 0
+  (
+    cd "$artifact_dir"
+    sha256sum Cargo.lock browser-helper-Cargo.lock browser-package.tar > SHA256SUMS
+    if test -f browser-evidence.json; then sha256sum browser-evidence.json >> SHA256SUMS; fi
+  )
+  exit "$result"
 fi
 if test "${CHECK_SUITE:-core}" = composition; then
   test -n "$CFRM_SOURCE_ARCHIVE"
