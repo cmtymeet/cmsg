@@ -188,23 +188,43 @@ impl Inbox {
     pub(super) fn check_selected_group(&self, peer: &str, member: &Member) -> Result<(), Error> {
         if let Some(history) = self.state.directional.get(peer) {
             if let Some(directive) = history.selected()? {
-                if directive.group_id != member.policy_group_id()? { return Err(Error::Admission); }
+                if directive.group_id != member.policy_group_id()? {
+                    return Err(Error::Admission);
+                }
             }
         }
         Ok(())
     }
 
-    pub(super) fn apply_replacement_control(&mut self, peer: &str, bytes: &[u8], member: &Member) -> Result<(), Error> {
+    pub(super) fn apply_replacement_control(
+        &mut self,
+        peer: &str,
+        bytes: &[u8],
+        member: &Member,
+    ) -> Result<(), Error> {
         let control: Control = serde_json::from_slice(bytes).map_err(|_| Error::InvalidMessage)?;
         let newest = control.chain.last().ok_or(Error::Admission)?;
-        if newest.kind != DirectiveKind::FreshInitiative || newest.initiator_id != peer || control.receipt.is_some() {
+        if newest.kind != DirectiveKind::FreshInitiative
+            || newest.initiator_id != peer
+            || control.receipt.is_some()
+        {
             return Err(Error::Admission);
         }
         let nonce = newest.introduction_id;
         self.apply_control_record(peer, bytes, member)?;
-        if self.state.directional.get(peer).is_some_and(|history| history.conflict)
-            || !self.state.introductions.get(peer).is_some_and(|entry| entry.id == nonce
-                && entry.strict.as_ref().is_some_and(|strict| strict.role == FirstContactRole::Recipient)) {
+        if self
+            .state
+            .directional
+            .get(peer)
+            .is_some_and(|history| history.conflict)
+            || !self.state.introductions.get(peer).is_some_and(|entry| {
+                entry.id == nonce
+                    && entry
+                        .strict
+                        .as_ref()
+                        .is_some_and(|strict| strict.role == FirstContactRole::Recipient)
+            })
+        {
             return Err(Error::Admission);
         }
         Ok(())

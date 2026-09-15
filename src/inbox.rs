@@ -13,8 +13,8 @@ mod owner_policy;
 use owner_policy::DirectionalContact;
 #[path = "inbox_replacement.rs"]
 mod replacement_policy;
-pub use replacement_policy::{ReopeningInvitation, ReplacementPreview};
 use replacement_policy::PendingReplacement;
+pub use replacement_policy::{ReopeningInvitation, ReplacementPreview};
 
 const CONTACT_DATA_PREFIX: &[u8] = b"cmsg.contact-data.v2\0";
 const CONTACT_DIRECTIVE_PREFIX: &[u8] = b"cmsg.contact-directive.v1\0";
@@ -268,7 +268,12 @@ impl Inbox {
         mut redeem: impl FnMut(&[u8]) -> Redemption,
     ) -> Result<Acceptance, Error> {
         self.check_binding(recipient)?;
-        if self.state.pending.as_ref().is_some_and(|pending| pending.replacement.is_some()) {
+        if self
+            .state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.replacement.is_some())
+        {
             return Ok(Acceptance::Busy);
         }
         if welcome.len() > MAX_WIRE_BYTES {
@@ -1646,7 +1651,7 @@ impl Inbox {
         }
         if let Some(pending) = &self.state.pending {
             if (pending.replacement.is_none()
-                    && (self.is_blocked(&pending.inviter) || self.is_known(&pending.inviter)))
+                && (self.is_blocked(&pending.inviter) || self.is_known(&pending.inviter)))
                 || self.state.blocked.contains(&pending.inviter)
                 || !crate::admission::valid_member_id(&pending.inviter)
                 || pending.recipient_redemption.is_empty()
@@ -1658,7 +1663,8 @@ impl Inbox {
                 return Err(Error::InvalidStore);
             }
             if pending.replacement.is_some() {
-                self.validate_pending_replacement(member, pending).map_err(|_| Error::InvalidStore)?;
+                self.validate_pending_replacement(member, pending)
+                    .map_err(|_| Error::InvalidStore)?;
                 return Ok(());
             }
             // Authenticate pending bindings at restore without requiring old

@@ -14,7 +14,10 @@ impl std::fmt::Debug for ReopeningInvitation {
     }
 }
 impl Drop for ReopeningInvitation {
-    fn drop(&mut self) { self.welcome.zeroize(); self.control.zeroize(); }
+    fn drop(&mut self) {
+        self.welcome.zeroize();
+        self.control.zeroize();
+    }
 }
 
 /// Authenticated private inputs for constructing the recipient's admission
@@ -34,7 +37,9 @@ impl std::fmt::Debug for ReplacementPreview {
 }
 impl Drop for ReplacementPreview {
     fn drop(&mut self) {
-        self.inviter.zeroize(); self.introduction_id.zeroize(); self.group_id.zeroize();
+        self.inviter.zeroize();
+        self.introduction_id.zeroize();
+        self.group_id.zeroize();
     }
 }
 
@@ -47,7 +52,9 @@ pub(super) struct PendingReplacement {
     pub(super) validated_at: u64,
 }
 impl Drop for PendingReplacement {
-    fn drop(&mut self) { self.control.zeroize(); }
+    fn drop(&mut self) {
+        self.control.zeroize();
+    }
 }
 
 struct PreparedReplacement {
@@ -61,15 +68,34 @@ impl Inbox {
     /// consuming a KeyPackage or changing the journal. The recipient's trusted
     /// admission adapter must bind its private claim to this exact context.
     pub fn preview_replacement(
-        &self, replacement: &Member, welcome: &[u8], control: &[u8],
+        &self,
+        replacement: &Member,
+        welcome: &[u8],
+        control: &[u8],
     ) -> Result<ReplacementPreview, Error> {
         self.check_binding(replacement)?;
-        if welcome.is_empty() || welcome.len() > MAX_WIRE_BYTES || control.is_empty() || control.len() > MAX_WIRE_BYTES {
+        if welcome.is_empty()
+            || welcome.len() > MAX_WIRE_BYTES
+            || control.is_empty()
+            || control.len() > MAX_WIRE_BYTES
+        {
             return Err(Error::InvalidMessage);
         }
-        let prepared = self.prepare_replacement(replacement, welcome, control, replacement.authorization_time()?)?;
-        if self.state.blocked.contains(&prepared.inviter) { return Err(Error::Admission); }
-        let entry = prepared.inbox.state.introductions.get(&prepared.inviter).ok_or(Error::InvalidState)?;
+        let prepared = self.prepare_replacement(
+            replacement,
+            welcome,
+            control,
+            replacement.authorization_time()?,
+        )?;
+        if self.state.blocked.contains(&prepared.inviter) {
+            return Err(Error::Admission);
+        }
+        let entry = prepared
+            .inbox
+            .state
+            .introductions
+            .get(&prepared.inviter)
+            .ok_or(Error::InvalidState)?;
         Ok(ReplacementPreview {
             inviter: prepared.inviter,
             introduction_id: entry.id,
@@ -93,20 +119,31 @@ impl Inbox {
         mut persist: impl FnMut(&[u8], &ReopeningInvitation) -> Result<(), Error>,
     ) -> Result<ReopeningInvitation, Error> {
         self.check_binding(replacement)?;
-        if self.state.pending.is_some() || replacement.policy_group_id().is_ok()
-            || replacement.device_authorization()?.is_none() {
+        if self.state.pending.is_some()
+            || replacement.policy_group_id().is_ok()
+            || replacement.device_authorization()?.is_none()
+        {
             return Err(Error::InvalidState);
         }
         let mut candidate = replacement.staged_copy(key, context)?;
         candidate.create_group()?;
         let invitation = candidate.add(peer_key_package)?;
         let peer = candidate.replacement_peer()?;
-        if !self.state.introductions.get(&peer).is_some_and(|entry| entry.strict.is_some()) {
+        if !self
+            .state
+            .introductions
+            .get(&peer)
+            .is_some_and(|entry| entry.strict.is_some())
+        {
             return Err(Error::Admission);
         }
         let mut changed = self.duplicate();
-        let control = changed.initiate_contact(&mut candidate, nonce, policy, key, context, |_, _| Ok(()))?;
-        let bundle = ReopeningInvitation { welcome: invitation.welcome, control };
+        let control =
+            changed.initiate_contact(&mut candidate, nonce, policy, key, context, |_, _| Ok(()))?;
+        let bundle = ReopeningInvitation {
+            welcome: invitation.welcome,
+            control,
+        };
         changed.validate_state(&candidate)?;
         persist(&changed.seal(&candidate, key, context)?, &bundle)?;
         *self = changed;
@@ -138,47 +175,86 @@ impl Inbox {
         if replacement.policy_group_id().is_ok() || replacement.device_authorization()?.is_none() {
             return Err(Error::InvalidState);
         }
-        if welcome.is_empty() || welcome.len() > MAX_WIRE_BYTES || control.is_empty() || control.len() > MAX_WIRE_BYTES {
+        if welcome.is_empty()
+            || welcome.len() > MAX_WIRE_BYTES
+            || control.is_empty()
+            || control.len() > MAX_WIRE_BYTES
+        {
             return Err(Error::InvalidMessage);
         }
         let hash: [u8; 32] = Sha256::digest(welcome).into();
         if let Some(pending) = &self.state.pending {
             if pending.welcome_hash != hash
-                || !pending.replacement.as_ref().is_some_and(|stored| stored.control == control)
-                || recipient_redemption.is_some_and(|bytes| bytes != pending.recipient_redemption) {
+                || !pending
+                    .replacement
+                    .as_ref()
+                    .is_some_and(|stored| stored.control == control)
+                || recipient_redemption.is_some_and(|bytes| bytes != pending.recipient_redemption)
+            {
                 return Ok(Acceptance::Busy);
             }
         }
         let at = replacement.authorization_time()?;
         let prepared = match self.prepare_replacement(replacement, welcome, control, at) {
             Ok(prepared) => prepared,
-            Err(error) => return if self.state.pending.is_some() { Ok(Acceptance::Pending) } else { Err(error) },
+            Err(error) => {
+                return if self.state.pending.is_some() {
+                    Ok(Acceptance::Pending)
+                } else {
+                    Err(error)
+                }
+            }
         };
-        if self.state.blocked.contains(&prepared.inviter) { return Ok(Acceptance::Blocked); }
+        if self.state.blocked.contains(&prepared.inviter) {
+            return Ok(Acceptance::Blocked);
+        }
         if self.state.pending.is_none() {
-            let Some(claim) = recipient_redemption else { return Ok(Acceptance::NeedsPermit); };
-            if claim.is_empty() || claim.len() > 8192 { return Err(Error::InvalidMessage); }
+            let Some(claim) = recipient_redemption else {
+                return Ok(Acceptance::NeedsPermit);
+            };
+            if claim.is_empty() || claim.len() > 8192 {
+                return Err(Error::InvalidMessage);
+            }
             self.state.pending = Some(Pending {
-                welcome: welcome.to_vec(), inviter: prepared.inviter.clone(), welcome_hash: hash,
+                welcome: welcome.to_vec(),
+                inviter: prepared.inviter.clone(),
+                welcome_hash: hash,
                 recipient_redemption: claim.to_vec(),
-                replacement: Some(PendingReplacement { control: control.to_vec(), validated_at: at }),
+                replacement: Some(PendingReplacement {
+                    control: control.to_vec(),
+                    validated_at: at,
+                }),
             });
         }
         drop(prepared);
         persist(&self.seal(replacement, key, context)?)?;
-        match redeem(&self.state.pending.as_ref().ok_or(Error::InvalidState)?.recipient_redemption) {
+        match redeem(
+            &self
+                .state
+                .pending
+                .as_ref()
+                .ok_or(Error::InvalidState)?
+                .recipient_redemption,
+        ) {
             Redemption::Indeterminate => return Ok(Acceptance::Pending),
             Redemption::Rejected => {
                 let mut cleared = self.duplicate();
                 cleared.state.pending = None;
-                if persist(&cleared.seal(replacement, key, context)?).is_err() { return Ok(Acceptance::Pending); }
+                if persist(&cleared.seal(replacement, key, context)?).is_err() {
+                    return Ok(Acceptance::Pending);
+                }
                 *self = cleared;
                 return Ok(Acceptance::Rejected);
             }
             Redemption::Accepted => (),
         }
         // Rebuild from the unchanged pending journal after external spending.
-        let mut prepared = match self.prepare_replacement(replacement, welcome, control, replacement.authorization_time()?) {
+        let mut prepared = match self.prepare_replacement(
+            replacement,
+            welcome,
+            control,
+            replacement.authorization_time()?,
+        ) {
             Ok(prepared) => prepared,
             Err(_) => return Ok(Acceptance::Pending),
         };
@@ -195,27 +271,48 @@ impl Inbox {
     /// Exact private retry control, paired with pending_welcome. Never disclose
     /// either frame or the identifying policy history to the admission operator.
     pub fn pending_replacement_control(&self) -> Option<&[u8]> {
-        self.state.pending.as_ref()?.replacement.as_ref().map(|pending| pending.control.as_slice())
+        self.state
+            .pending
+            .as_ref()?
+            .replacement
+            .as_ref()
+            .map(|pending| pending.control.as_slice())
     }
 
     fn prepare_replacement(
-        &self, replacement: &Member, welcome: &[u8], control: &[u8], at: u64,
+        &self,
+        replacement: &Member,
+        welcome: &[u8],
+        control: &[u8],
+        at: u64,
     ) -> Result<PreparedReplacement, Error> {
-        if at == 0 || at > replacement.authorization_time()? { return Err(Error::InvalidStore); }
+        if at == 0 || at > replacement.authorization_time()? {
+            return Err(Error::InvalidStore);
+        }
         let (candidate, (changed, inviter)) = replacement.inspect_at(at, |candidate| {
             let prepared = candidate.prepare_join(welcome)?;
             let inviter = prepared.inviter.clone();
             candidate.commit_join(prepared, |_| Ok(()))?;
-            if candidate.replacement_peer()? != inviter { return Err(Error::Admission); }
+            if candidate.replacement_peer()? != inviter {
+                return Err(Error::Admission);
+            }
             let mut changed = self.duplicate();
             changed.state.pending = None;
-            if !changed.state.introductions.get(&inviter).is_some_and(|entry| entry.strict.is_some()) {
+            if !changed
+                .state
+                .introductions
+                .get(&inviter)
+                .is_some_and(|entry| entry.strict.is_some())
+            {
                 return Err(Error::Admission);
             }
             let raw = candidate.receive_policy_excluding(control, &BTreeSet::new())?;
             match raw {
                 Received::Bytes(message) if message.member_id == inviter => {
-                    let body = message.bytes.strip_prefix(CONTACT_DIRECTIVE_PREFIX).ok_or(Error::InvalidMessage)?;
+                    let body = message
+                        .bytes
+                        .strip_prefix(CONTACT_DIRECTIVE_PREFIX)
+                        .ok_or(Error::InvalidMessage)?;
                     changed.apply_replacement_control(&inviter, body, candidate)?;
                 }
                 _ => return Err(Error::InvalidMessage),
@@ -225,16 +322,31 @@ impl Inbox {
             changed.validate_state(replacement)?;
             Ok((changed, inviter))
         })?;
-        Ok(PreparedReplacement { member: candidate, inbox: changed, inviter })
+        Ok(PreparedReplacement {
+            member: candidate,
+            inbox: changed,
+            inviter,
+        })
     }
 
-    pub(super) fn validate_pending_replacement(&self, member: &Member, pending: &Pending) -> Result<(), Error> {
+    pub(super) fn validate_pending_replacement(
+        &self,
+        member: &Member,
+        pending: &Pending,
+    ) -> Result<(), Error> {
         let replacement = pending.replacement.as_ref().ok_or(Error::InvalidStore)?;
         if replacement.control.is_empty() || replacement.control.len() > MAX_WIRE_BYTES {
             return Err(Error::InvalidStore);
         }
-        let prepared = self.prepare_replacement(member, &pending.welcome, &replacement.control, replacement.validated_at)?;
-        if prepared.inviter != pending.inviter { return Err(Error::InvalidStore); }
+        let prepared = self.prepare_replacement(
+            member,
+            &pending.welcome,
+            &replacement.control,
+            replacement.validated_at,
+        )?;
+        if prepared.inviter != pending.inviter {
+            return Err(Error::InvalidStore);
+        }
         Ok(())
     }
 }

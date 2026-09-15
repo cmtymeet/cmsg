@@ -1,13 +1,13 @@
 //! Browser bindings for the same MLS core and wire format used by native peers.
 //! JavaScript owns the UI, durable ciphertext storage and Tor transport. These
 //! bindings never call browser fetch, render messages or choose a gateway.
+use crate::inbox::ReopeningInvitation;
 use crate::{
     Acceptance, AdmissionGrant, AdmissionTrust, Clock, ContactResolution, DeviceAuthorization,
     Error, FirstContactPolicy, FirstContactRole, FrameCodec, Inbox, Invitation, Member,
     MemberIdentity, OnionEndpoint, Participant, Received, Redemption, MAX_DATA_BYTES,
     MAX_WIRE_BYTES,
 };
-use crate::inbox::ReopeningInvitation;
 use js_sys::{Array, Function, Promise, Uint8Array};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -392,13 +392,25 @@ impl BrowserInbox {
         let recipient_redemption = recipient_redemption.map(Zeroizing::new);
         let mut checkpoint = None;
         let mut request = None;
-        let result = candidate.inbox.accept_replacement(
-            &mut candidate.member, welcome, control,
-            recipient_redemption.as_ref().map(|bytes| bytes.as_slice()),
-            &key, context,
-            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
-            |bytes| { request = Some(Zeroizing::new(bytes.to_vec())); Redemption::Indeterminate },
-        ).map_err(js_error)?;
+        let result = candidate
+            .inbox
+            .accept_replacement(
+                &mut candidate.member,
+                welcome,
+                control,
+                recipient_redemption.as_ref().map(|bytes| bytes.as_slice()),
+                &key,
+                context,
+                |bytes| {
+                    checkpoint = Some(bytes.to_vec());
+                    Ok(())
+                },
+                |bytes| {
+                    request = Some(Zeroizing::new(bytes.to_vec()));
+                    Redemption::Indeterminate
+                },
+            )
+            .map_err(js_error)?;
         if let Some(checkpoint) = checkpoint {
             persist_browser(persist, &checkpoint, &[]).await?;
             // A pending replacement already owns its KeyPackage private state.
@@ -408,10 +420,16 @@ impl BrowserInbox {
             }
             *self = candidate;
         }
-        let Some(request) = request else { return Ok(acceptance_name(result)); };
-        let outcome = match redeem.call1(&JsValue::UNDEFINED, &Uint8Array::from(request.as_slice())) {
+        let Some(request) = request else {
+            return Ok(acceptance_name(result));
+        };
+        let outcome = match redeem.call1(&JsValue::UNDEFINED, &Uint8Array::from(request.as_slice()))
+        {
             Ok(value) => match value.dyn_into::<Promise>() {
-                Ok(promise) => JsFuture::from(promise).await.ok().and_then(|value| value.as_string()),
+                Ok(promise) => JsFuture::from(promise)
+                    .await
+                    .ok()
+                    .and_then(|value| value.as_string()),
                 Err(_) => None,
             },
             Err(_) => None,
@@ -423,14 +441,25 @@ impl BrowserInbox {
         };
         let mut candidate = self.duplicate(&key, context)?;
         let mut checkpoint = None;
-        let result = candidate.inbox.accept_replacement(
-            &mut candidate.member, welcome, control, None, &key, context,
-            |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
-            |_| match outcome {
-                Redemption::Accepted => Redemption::Accepted,
-                _ => Redemption::Rejected,
-            },
-        ).map_err(js_error)?;
+        let result = candidate
+            .inbox
+            .accept_replacement(
+                &mut candidate.member,
+                welcome,
+                control,
+                None,
+                &key,
+                context,
+                |bytes| {
+                    checkpoint = Some(bytes.to_vec());
+                    Ok(())
+                },
+                |_| match outcome {
+                    Redemption::Accepted => Redemption::Accepted,
+                    _ => Redemption::Rejected,
+                },
+            )
+            .map_err(js_error)?;
         if let Some(checkpoint) = checkpoint {
             persist_browser(persist, &checkpoint, &[]).await?;
             *self = candidate;
@@ -892,20 +921,36 @@ impl BrowserInbox {
         context: &[u8],
         persist: Function,
     ) -> Result<BrowserReopeningInvitation, JsValue> {
-        let introduction_id: &[u8; 32] = introduction_id.try_into()
+        let introduction_id: &[u8; 32] = introduction_id
+            .try_into()
             .map_err(|_| js_error(Error::Admission))?;
         let policy = contact_policy(response_deadline, max_intro_bytes)?;
         let key = wrapping_key(key)?;
         let retirement = Member::new_with_clock(Arc::new(BrowserClock)).map_err(js_error)?;
         let mut candidate = self.duplicate_with_member(&replacement.member, &key, context)?;
         let mut checkpoint = None;
-        let invitation = candidate.inbox.initiate_replacement(
-            &mut candidate.member, peer_key_package, introduction_id, policy, &key, context,
-            |bytes, _| { checkpoint = Some(bytes.to_vec()); Ok(()) },
-        ).map_err(js_error)?;
+        let invitation = candidate
+            .inbox
+            .initiate_replacement(
+                &mut candidate.member,
+                peer_key_package,
+                introduction_id,
+                policy,
+                &key,
+                context,
+                |bytes, _| {
+                    checkpoint = Some(bytes.to_vec());
+                    Ok(())
+                },
+            )
+            .map_err(js_error)?;
         let checkpoint = checkpoint.ok_or_else(|| js_error(Error::InvalidStore))?;
-        persist_browser(&persist, &checkpoint,
-            &[invitation.welcome.clone(), invitation.control.clone()]).await?;
+        persist_browser(
+            &persist,
+            &checkpoint,
+            &[invitation.welcome.clone(), invitation.control.clone()],
+        )
+        .await?;
         replacement.member = retirement;
         *self = candidate;
         Ok(BrowserReopeningInvitation { invitation })
@@ -920,7 +965,9 @@ impl BrowserInbox {
         welcome: &[u8],
         control: &[u8],
     ) -> Result<String, JsValue> {
-        let preview = self.inbox.preview_replacement(&replacement.member, welcome, control)
+        let preview = self
+            .inbox
+            .preview_replacement(&replacement.member, welcome, control)
             .map_err(js_error)?;
         serde_json::to_string(&preview).map_err(|_| js_error(Error::InvalidMessage))
     }
@@ -938,8 +985,17 @@ impl BrowserInbox {
         persist: Function,
         redeem: Function,
     ) -> Result<String, JsValue> {
-        self.accept_replacement_candidate(Some(replacement), welcome, control,
-            recipient_redemption, key, context, &persist, &redeem).await
+        self.accept_replacement_candidate(
+            Some(replacement),
+            welcome,
+            control,
+            recipient_redemption,
+            key,
+            context,
+            &persist,
+            &redeem,
+        )
+        .await
     }
 
     /// Retry the exact durable pending replacement with its internal member and
@@ -952,12 +1008,20 @@ impl BrowserInbox {
         persist: Function,
         redeem: Function,
     ) -> Result<String, JsValue> {
-        let welcome = self.inbox.pending_welcome().map(<[u8]>::to_vec)
+        let welcome = self
+            .inbox
+            .pending_welcome()
+            .map(<[u8]>::to_vec)
             .ok_or_else(|| js_error(Error::InvalidState))?;
-        let control = self.inbox.pending_replacement_control().map(<[u8]>::to_vec)
+        let control = self
+            .inbox
+            .pending_replacement_control()
+            .map(<[u8]>::to_vec)
             .ok_or_else(|| js_error(Error::InvalidState))?;
-        self.accept_replacement_candidate(None, &welcome, &control, None,
-            key, context, &persist, &redeem).await
+        self.accept_replacement_candidate(
+            None, &welcome, &control, None, key, context, &persist, &redeem,
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = consentContact)]
