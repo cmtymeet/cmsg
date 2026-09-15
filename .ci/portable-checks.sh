@@ -10,7 +10,7 @@ for tool in wasm-bindgen wasm-bindgen-test-runner chromium chromium-browser goog
     printf 'Browser prerequisite %s: unavailable\n' "$tool"
   fi
 done
-artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA"
+artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/${CHECK_SUITE:-core}"
 mkdir -p "$artifact_dir"
 case "${CHECK_SUITE:-core}" in
   core|browser|composition) ;;
@@ -24,13 +24,17 @@ cp Cargo.lock "$artifact_dir/Cargo.lock"
 result=0
 if test "${CHECK_SUITE:-core}" = browser; then
   test -x "$BROWSER_BIN"
+  compiler_root="$(rustc --print sysroot)"
+  compiler_host="$(rustc -vV | sed -n 's/^host: //p')"
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$compiler_root/lib/rustlib/$compiler_host/bin/rust-lld"
+  test -x "$CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"
   if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
     cargo update --manifest-path .ci/browser-bindgen/Cargo.toml --workspace
   fi
   cp .ci/browser-bindgen/Cargo.lock "$artifact_dir/browser-helper-Cargo.lock"
   timeout 1200 cargo build --locked --target wasm32-unknown-unknown --lib
   timeout 1200 cargo run --locked --manifest-path .ci/browser-bindgen/Cargo.toml -- \
-    "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg
+    "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg cmsg
   export BROWSER_BIN BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
   timeout 300 node .ci/browser-check.mjs
   tar --create --file "$artifact_dir/browser-package.tar" browser/pkg browser/index.mjs browser/package.json

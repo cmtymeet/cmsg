@@ -149,3 +149,29 @@ fn sibling_sync_preserves_the_single_initial_writer_and_message_progress() {
     assert!(matches!(p.bi.receive_contact(&mut p.b, &followup, &KEY, CONTEXT, |_| Ok(())).unwrap(), Received::Text(message)
         if message.member_id == p.a_root.member_id()));
 }
+
+#[test]
+fn admission_expiring_during_external_redemption_keeps_the_exact_spent_attempt_pending() {
+    let time = Arc::new(Time(AtomicU64::new(100)));
+    let sender_root = MemberIdentity::new("synthetic-community").unwrap();
+    let recipient_root = MemberIdentity::new("synthetic-community").unwrap();
+    let mut sender = device(&sender_root, &time);
+    let mut recipient = device(&recipient_root, &time);
+    sender.create_group().unwrap();
+    let welcome = sender.add(&recipient.key_package().unwrap()).unwrap().welcome;
+    let mut inbox = Inbox::new(&recipient).unwrap();
+    let mut saved = Vec::new();
+    let mut debits = 0;
+    let result = inbox.accept(&mut recipient, &welcome, Some(b"exact already-spent claim"), &KEY, CONTEXT,
+        |state| { saved = state.to_vec(); Ok(()) },
+        |_| { debits += 1; time.0.store(1000, Ordering::Relaxed); cmsg::Redemption::Accepted }).unwrap();
+    assert_eq!(result, cmsg::Acceptance::Pending);
+    assert_eq!(debits, 1);
+    assert!(!inbox.is_known(sender_root.member_id()));
+    assert!(recipient.send(b"not joined after expiry").is_err());
+    assert_eq!(inbox.pending_welcome(), Some(welcome.as_slice()));
+    let (mut restored, mut recipient) = Inbox::restore_with_clock(&saved, &KEY, CONTEXT, time).unwrap();
+    assert_eq!(restored.pending_welcome(), Some(welcome.as_slice()));
+    assert!(restored.accept(&mut recipient, &welcome, None, &KEY, CONTEXT,
+        |_| panic!("expired admission cannot publish"), |_| panic!("no new debit or claim")).is_err());
+}

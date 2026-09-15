@@ -68,3 +68,26 @@ fn failed_persistence_cannot_resolve_or_close_and_unrelated_receipts_are_rejecte
     assert!(inbox.apply_resolution(&receipt, &alice, &KEY, CONTEXT, |_| Ok(())).unwrap());
     assert_eq!(format!("{receipt:?}"), "ContactResolution([redacted])");
 }
+
+#[test]
+fn a_later_verified_close_is_terminal_without_another_first_resolution_and_evidence_survives_restore() {
+    let alice_id = MemberIdentity::new("synthetic-community").unwrap();
+    let bob_id = MemberIdentity::new("synthetic-community").unwrap();
+    let alice = common::root_device(&alice_id);
+    let bob = common::root_device(&bob_id);
+    let mut inbox = Inbox::new(&alice).unwrap();
+    inbox.begin_introduction(bob_id.member_id(), &NONCE, &alice, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let answer = bob.sign_contact_resolution(alice_id.member_id(), &NONCE, Kind::Answered).unwrap();
+    assert!(inbox.apply_resolution(&answer, &alice, &KEY, CONTEXT, |_| Ok(())).unwrap());
+    let close = bob.sign_contact_resolution(alice_id.member_id(), &NONCE, Kind::ClosedForever).unwrap();
+    let mut saved = Vec::new();
+    assert!(!inbox.apply_resolution(&close, &alice, &KEY, CONTEXT, |state| { saved = state.to_vec(); Ok(()) }).unwrap(),
+        "closing an answered contact is not another first resolution");
+    assert!(inbox.is_closed(bob_id.member_id()));
+    let (mut restored, alice) = Inbox::restore(&saved, &KEY, CONTEXT).unwrap();
+    let stored: ContactResolution = serde_json::from_slice(restored.inbound_resolution_receipt(bob_id.member_id()).unwrap()).unwrap();
+    alice.verify_contact_resolution(&stored, bob_id.member_id(), &NONCE).unwrap();
+    assert_eq!(stored.kind, Kind::ClosedForever);
+    assert!(!restored.apply_resolution(&close, &alice, &KEY, CONTEXT, |_| panic!("exact replay changes nothing")).unwrap());
+    assert!(restored.apply_resolution(&answer, &alice, &KEY, CONTEXT, |_| panic!("cannot reopen")).is_err());
+}

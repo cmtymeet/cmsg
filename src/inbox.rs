@@ -117,6 +117,7 @@ struct Introduction {
     id: [u8; 32],
     decision: Option<ContactResolutionKind>,
     outbound_receipt: Option<Vec<u8>>,
+    inbound_receipt: Option<Vec<u8>>,
     strict: Option<StrictIntroduction>,
 }
 
@@ -124,6 +125,9 @@ impl Drop for Introduction {
     fn drop(&mut self) {
         self.id.zeroize();
         if let Some(bytes) = &mut self.outbound_receipt {
+            bytes.zeroize();
+        }
+        if let Some(bytes) = &mut self.inbound_receipt {
             bytes.zeroize();
         }
         if let Some(strict) = &mut self.strict {
@@ -239,6 +243,7 @@ impl Inbox {
         )? {
             return Ok(Acceptance::Blocked);
         }
+        drop(prepared);
         let hash: [u8; 32] = Sha256::digest(welcome).into();
         if let Some(pending) = &self.state.pending {
             if pending.welcome_hash != hash
@@ -289,6 +294,13 @@ impl Inbox {
                 Redemption::Accepted => (),
             }
         }
+        // External redemption can outlive admission. A previously authenticated
+        // candidate is not permission to join after expiry; keep the durable
+        // spent attempt pending rather than minting a claim or refunding it.
+        let prepared = match recipient.prepare_join(welcome) {
+            Ok(prepared) => prepared,
+            Err(error) => return if known { Err(error) } else { Ok(Acceptance::Pending) },
+        };
         let mut committed = self.duplicate();
         if inviter != self.state.recipient_id {
             committed.state.known.insert(inviter);
@@ -424,7 +436,7 @@ impl Inbox {
         }
         let mut changed = self.duplicate();
         changed.state.introductions.insert(peer_id.to_owned(), Introduction {
-            id: *introduction_id, decision: None, outbound_receipt: None, strict: None,
+            id: *introduction_id, decision: None, outbound_receipt: None, inbound_receipt: None, strict: None,
         });
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
@@ -476,7 +488,7 @@ impl Inbox {
         }
         let mut changed = self.duplicate();
         changed.state.introductions.insert(peer_id.to_owned(), Introduction {
-            id: *introduction_id, decision: None, outbound_receipt: None,
+            id: *introduction_id, decision: None, outbound_receipt: None, inbound_receipt: None,
             strict: Some(StrictIntroduction {
                 role, policy, initial_writer_key: member.chat_public_key(), sent: false, received: false, close_sent: false,
             }),
@@ -526,6 +538,9 @@ impl Inbox {
 
     /// Send one introduction, an actual reply, or established conversation text.
     /// The callback atomically persists checkpoint and exact outbound ciphertext.
+    /// Authorization and deadline checks apply when preparing this operation.
+    /// Successful durable persistence commits it even if the callback takes time;
+    /// callers must never roll back that committed ratchet to enforce a later time.
     pub fn send_contact(
         &mut self, member: &mut Member, text: &[u8], key: &[u8; 32], context: &[u8],
         persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
@@ -612,6 +627,7 @@ impl Inbox {
                 candidate.verify_contact_resolution(&receipt, &peer, &entry.id)?;
                 entry.decision = Some(ContactResolutionKind::ClosedForever);
                 entry.outbound_receipt = None;
+                entry.inbound_receipt = Some(message.bytes[CLOSE_PAYLOAD_PREFIX.len()..].to_vec());
                 changed.state.closed.insert(peer.clone());
                 peer_closed = true;
                 None
@@ -742,9 +758,10 @@ impl Inbox {
         Ok(encoded)
     }
 
-    /// Apply the peer's signed decision once for the locally registered nonce.
-    /// Returns false for an exact already-applied decision. Replays cannot create
-    /// another local transition; contradictory or unrelated receipts fail closed.
+    /// Apply the peer's signed decision for the locally registered nonce. True
+    /// means the first unresolved-to-resolved transition. False can still persist
+    /// a later permanent closure or newly supplied receipt evidence, but never a
+    /// second first-contact resolution. This return value is not a credit proof.
     pub fn apply_resolution(
         &mut self,
         receipt: &ContactResolution,
@@ -760,14 +777,25 @@ impl Inbox {
         if existing.strict.is_some() && receipt.kind == ContactResolutionKind::Answered && existing.decision.is_none() {
             return Err(Error::InvalidState);
         }
+        let first_resolution = existing.decision.is_none();
         if let Some(decision) = existing.decision {
-            return if decision == receipt.kind { Ok(false) } else { Err(Error::InvalidState) };
+            if decision == receipt.kind && existing.inbound_receipt.is_some() {
+                return Ok(false);
+            }
+            if decision != receipt.kind && receipt.kind != ContactResolutionKind::ClosedForever {
+                return Err(Error::InvalidState);
+            }
         }
         if receipt.kind == ContactResolutionKind::Answered && self.is_closed(peer_id) {
             return Err(Error::Admission);
         }
         let mut changed = self.duplicate();
-        changed.state.introductions.get_mut(peer_id).ok_or(Error::InvalidState)?.decision = Some(receipt.kind);
+        let entry = changed.state.introductions.get_mut(peer_id).ok_or(Error::InvalidState)?;
+        entry.decision = Some(receipt.kind);
+        entry.inbound_receipt = Some(serde_json::to_vec(receipt).map_err(|_| Error::InvalidMessage)?);
+        if receipt.kind == ContactResolutionKind::ClosedForever {
+            entry.outbound_receipt = None;
+        }
         if receipt.kind == ContactResolutionKind::ClosedForever {
             changed.state.closed.insert(peer_id.clone());
             if changed.state.pending.as_ref().is_some_and(|pending| &pending.inviter == peer_id) {
@@ -776,7 +804,18 @@ impl Inbox {
         }
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
-        Ok(true)
+        Ok(first_resolution)
+    }
+
+    /// Exact verified peer receipt retained locally for an eventual independent
+    /// proof adapter. Never send these identifying bytes to a policy operator.
+    pub fn inbound_resolution_receipt(&self, peer_id: &str) -> Option<&[u8]> {
+        self.state.introductions.get(peer_id)?.inbound_receipt.as_deref()
+    }
+
+    /// Locally signed decision retained with its checkpoint for private delivery.
+    pub fn outbound_resolution_receipt(&self, peer_id: &str) -> Option<&[u8]> {
+        self.state.introductions.get(peer_id)?.outbound_receipt.as_deref()
     }
 
     /// Private device-sync payload. It discloses contacts: carry it only inside
@@ -876,6 +915,14 @@ impl Inbox {
                     _ => (),
                 }
                 existing.strict = strict;
+                if existing.decision == incoming.decision {
+                    if existing.inbound_receipt.is_none() {
+                        existing.inbound_receipt = incoming.inbound_receipt.clone();
+                    }
+                    if existing.outbound_receipt.is_none() {
+                        existing.outbound_receipt = incoming.outbound_receipt.clone();
+                    }
+                }
             } else {
                 changed.state.introductions.insert(peer.clone(), incoming.clone());
             }
@@ -990,6 +1037,19 @@ impl Inbox {
                     || receipt.introduction_id != introduction.id
                     || (Some(receipt.kind) != introduction.decision && !sender_cancellation)
                     || receipt.community_id != self.state.community_id
+                    || receipt.issued_at == 0 || receipt.issued_at > member.authorization_time()?
+                {
+                    return Err(Error::InvalidStore);
+                }
+                receipt.verify_device_signature(member, receipt.issued_at).map_err(|_| Error::InvalidStore)?;
+            }
+            if let Some(bytes) = &introduction.inbound_receipt {
+                if bytes.len() > 16 * 1024 { return Err(Error::InvalidStore); }
+                let receipt: ContactResolution = serde_json::from_slice(bytes).map_err(|_| Error::InvalidStore)?;
+                if &receipt.responder_id != peer || receipt.peer_id != self.state.recipient_id
+                    || receipt.community_id != self.state.community_id || receipt.introduction_id != introduction.id
+                    || introduction.decision.is_none()
+                    || (Some(receipt.kind) != introduction.decision && introduction.decision != Some(ContactResolutionKind::ClosedForever))
                     || receipt.issued_at == 0 || receipt.issued_at > member.authorization_time()?
                 {
                     return Err(Error::InvalidStore);
