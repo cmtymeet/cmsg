@@ -912,3 +912,146 @@ fn internal_contact_envelopes_cannot_escape_generic_receive_or_consume_its_keys(
         )
         .is_err());
 }
+
+#[test]
+fn owner_reopens_in_a_replacement_group_with_fresh_admission_and_no_old_group_bypass() {
+    let mut p = established();
+    let close = p.bi.close_contact(&mut p.b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut p.a, &close, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let mut a = device(&p.ar, &p.time);
+    let mut b = device(&p.br, &p.time);
+    let package = a.key_package().unwrap();
+    assert!(p.bi.initiate_replacement(&mut b, &package, &FRESH, policy(), &KEY, CONTEXT,
+        |_, _| Err(Error::InvalidStore)).is_err());
+    assert!(b.participants().is_err());
+    assert!(p.bi.is_closed(p.ar.member_id()));
+    let bundle = p.bi.initiate_replacement(&mut b, &package, &FRESH, policy(), &KEY, CONTEXT,
+        |_, frames| { assert!(!frames.welcome.is_empty() && !frames.control.is_empty()); Ok(()) }).unwrap();
+    let key_before_preview = a.chat_public_key();
+    let preview = p.ai.preview_replacement(&a, &bundle.welcome, &bundle.control).unwrap();
+    assert_eq!(preview.inviter, p.br.member_id());
+    assert_eq!(preview.introduction_id, FRESH);
+    assert_eq!(preview.policy, policy());
+    assert!(!preview.group_id.is_empty());
+    assert_eq!(format!("{preview:?}"), "ReplacementPreview([redacted])");
+    assert_eq!(a.chat_public_key(), key_before_preview);
+    assert!(a.participants().is_err(), "preview does not join");
+    assert!(p.ai.is_closed(p.br.member_id()), "preview does not change contact policy");
+    assert_eq!(p.ai.accept_replacement(&mut a, &bundle.welcome, &bundle.control, None, &KEY, CONTEXT,
+        |_| panic!("no admission claim"), |_| panic!("no admission claim")).unwrap(), cmsg::Acceptance::NeedsPermit);
+    let mut altered = bundle.control.clone();
+    *altered.last_mut().unwrap() ^= 1;
+    assert!(p.ai.preview_replacement(&a, &bundle.welcome, &altered).is_err());
+    assert!(p.ai.accept_replacement(&mut a, &bundle.welcome, &altered, Some(b"private recipient claim"), &KEY, CONTEXT,
+        |_| panic!("authenticate before persistence"), |_| panic!("authenticate before spending")).is_err());
+    assert_eq!(p.ai.accept_replacement(&mut a, &bundle.welcome, &bundle.control, Some(b"private recipient claim"), &KEY, CONTEXT,
+        |_| Ok(()), |_| cmsg::Redemption::Accepted).unwrap(), cmsg::Acceptance::Joined);
+    assert!(!p.ai.is_closed(p.br.member_id()));
+    assert!(p.ai.is_known(p.br.member_id()));
+    assert!(p.ai.send_contact(&mut a, b"no implicit answer", &KEY, CONTEXT, |_, _| panic!("fresh intro required")).is_err());
+
+    // A legitimate old device still has a valid MLS signing key and ratchet.
+    // The new nonce alone must not authorize it to use the discarded group.
+    let mut old_record = b"cmsg.contact-data.v2\0".to_vec();
+    old_record.extend_from_slice(&FRESH);
+    old_record.push(0);
+    old_record.extend_from_slice(b"new nonce in old group");
+    let old_wire = p.b.send_bytes(&old_record).unwrap();
+    assert!(p.ai.receive_contact(&mut p.a, &old_wire, &KEY, CONTEXT,
+        |_| panic!("old group cannot carry the replacement nonce")).is_err());
+    assert!(p.bi.send_contact_bytes(&mut p.b, b"old owner device", &KEY, CONTEXT,
+        |_, _| panic!("selected group must match")).is_err());
+    let intro = p.bi.send_contact(&mut b, b"recovered owner introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut a, &intro, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let answer = p.ai.send_contact(&mut a, b"new group answer", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.bi.receive_contact(&mut b, &answer, &KEY, CONTEXT, |_| Ok(())).unwrap();
+
+    // A second replacement remains subject to new admission even though known.
+    let close = p.bi.close_contact(&mut b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut a, &close, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let mut a_next = device(&p.ar, &p.time);
+    let mut b_next = device(&p.br, &p.time);
+    let next = p.bi.initiate_replacement(&mut b_next, &a_next.key_package().unwrap(), &[80; 32], policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    assert_eq!(p.ai.accept_replacement(&mut a_next, &next.welcome, &next.control, None, &KEY, CONTEXT,
+        |_| panic!("known does not bypass replacement admission"), |_| panic!("claim required")).unwrap(), cmsg::Acceptance::NeedsPermit);
+}
+
+#[test]
+fn replacement_group_preserves_both_owners_consent() {
+    let mut p = established();
+    let a_close = p.ai.close_contact(&mut p.a, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.bi.receive_contact(&mut p.b, &a_close, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let b_close = p.bi.close_contact(&mut p.b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut p.a, &b_close, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let mut a = device(&p.ar, &p.time);
+    let mut b = device(&p.br, &p.time);
+    let bundle = p.bi.initiate_replacement(&mut b, &a.key_package().unwrap(), &FRESH, policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    assert_eq!(p.ai.accept_replacement(&mut a, &bundle.welcome, &bundle.control, Some(b"recipient-bound claim"), &KEY, CONTEXT,
+        |_| Ok(()), |_| cmsg::Redemption::Accepted).unwrap(), cmsg::Acceptance::Joined);
+    assert!(p.ai.is_closed(p.br.member_id()));
+    assert!(p.bi.is_closed(p.ar.member_id()));
+    assert!(p.bi.send_contact(&mut b, b"without second owner consent", &KEY, CONTEXT, |_, _| panic!("blocked")).is_err());
+    let consent = p.ai.consent_contact(&mut a, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.bi.receive_contact(&mut b, &consent, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let intro = p.bi.send_contact(&mut b, b"both owners consented", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut a, &intro, &KEY, CONTEXT, |_| Ok(())).unwrap();
+}
+
+#[test]
+fn replacement_pending_survives_storage_failure_ambiguity_and_expiry_without_new_spending() {
+    let mut p = established();
+    let close = p.bi.close_contact(&mut p.b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut p.a, &close, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let mut a = device(&p.ar, &p.time);
+    let mut b = device(&p.br, &p.time);
+    let bundle = p.bi.initiate_replacement(&mut b, &a.key_package().unwrap(), &FRESH, policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    assert!(p.ai.accept_replacement(&mut a, &bundle.welcome, &bundle.control, Some(b"one durable private claim"), &KEY, CONTEXT,
+        |_| Err(Error::InvalidStore), |_| panic!("failed pending write prevents spending")).is_err());
+    assert!(a.participants().is_err());
+    let mut pending = Vec::new();
+    assert_eq!(p.ai.accept_replacement(&mut a, &bundle.welcome, &bundle.control, None, &KEY, CONTEXT,
+        |state| { pending = state.to_vec(); Ok(()) }, |claim| { assert_eq!(claim, b"one durable private claim"); cmsg::Redemption::Indeterminate }).unwrap(), cmsg::Acceptance::Pending);
+    let (mut restored, mut a) = Inbox::restore_with_clock(&pending, &KEY, CONTEXT, p.time.clone()).unwrap();
+    assert_eq!(restored.pending_replacement_control().unwrap(), bundle.control);
+    assert_eq!(restored.accept_replacement(&mut a, &bundle.welcome, &bundle.control, Some(b"replacement claim"), &KEY, CONTEXT,
+        |_| panic!("claim cannot change"), |_| panic!("claim cannot change")).unwrap(), cmsg::Acceptance::Busy);
+    let mut writes = 0;
+    assert_eq!(restored.accept_replacement(&mut a, &bundle.welcome, &bundle.control, None, &KEY, CONTEXT,
+        |_| { writes += 1; if writes == 2 { Err(Error::InvalidStore) } else { Ok(()) } },
+        |_| cmsg::Redemption::Accepted).unwrap(), cmsg::Acceptance::Pending);
+    assert!(a.participants().is_err());
+    assert!(restored.is_closed(p.br.member_id()));
+    assert_eq!(restored.accept_replacement(&mut a, &bundle.welcome, &bundle.control, None, &KEY, CONTEXT,
+        |state| { pending = state.to_vec(); Ok(()) }, |_| { p.time.0.store(10_001, Ordering::Relaxed); cmsg::Redemption::Accepted }).unwrap(), cmsg::Acceptance::Pending);
+    let (mut expired, mut a) = Inbox::restore_with_clock(&pending, &KEY, CONTEXT, p.time.clone()).unwrap();
+    assert_eq!(expired.pending_replacement_control().unwrap(), bundle.control);
+    assert_eq!(expired.accept_replacement(&mut a, &bundle.welcome, &bundle.control, None, &KEY, CONTEXT,
+        |_| panic!("expired pending cannot be reauthorized"), |_| panic!("no new spending while expired")).unwrap(), cmsg::Acceptance::Pending);
+    expired.cancel_pending(&a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(expired.pending_replacement_control().is_none());
+}
+
+#[test]
+fn malicious_sender_cannot_reset_unanswered_introduction_by_minting_a_replacement_group() {
+    let mut p = pending();
+    let mut a = device(&p.ar, &p.time);
+    let mut b = device(&p.br, &p.time);
+    let package = b.key_package().unwrap();
+    p.ai.block_member_until(p.br.member_id(), None, &p.a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(p.ai.initiate_replacement(&mut a, &package, &FRESH, policy(), &KEY, CONTEXT,
+        |_, _| panic!("sender cancellation creates no fresh reach")).is_err());
+    a.create_group().unwrap();
+    let welcome = a.add(&package).unwrap().welcome;
+    p.ai.block_member_until(p.br.member_id(), None, &a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let mut directives = chain(&p.ai, &a, p.br.member_id());
+    let previous = directives.last().unwrap();
+    let forged_initiative = a.sign_contact_directive(p.br.member_id(), directives.len() as u64 + 1,
+        &previous.digest().unwrap(), &[0; 32], cmsg::ContactDirectiveKind::FreshInitiative,
+        &FRESH, p.ar.member_id(), &previous.group_id, Some(policy()), None).unwrap();
+    directives.push(forged_initiative);
+    let control = malicious_control(&mut a, &directives);
+    assert!(p.bi.accept_replacement(&mut b, &welcome, &control, Some(b"even a fresh permit is insufficient"), &KEY, CONTEXT,
+        |_| panic!("receiver must preserve unresolved incoming"), |_| panic!("reject before spending")).is_err());
+    assert!(b.participants().is_err());
+    assert!(p.ai.awaiting_peer_resolution(p.br.member_id()));
+}

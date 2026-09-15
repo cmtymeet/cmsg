@@ -936,6 +936,53 @@ impl Member {
         )
     }
 
+    /// Revalidate private sealed pending state at its locally recorded time.
+    /// The returned candidate always resumes the caller's live clock. Network
+    /// callers must supply the current time, never a peer-claimed timestamp.
+    pub(crate) fn inspect_at<T>(
+        &self,
+        at: u64,
+        inspect: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<(Self, T), Error> {
+        struct InspectionClock(u64);
+        impl Clock for InspectionClock {
+            fn now(&self) -> Result<u64, Error> { Ok(self.0) }
+        }
+        let mut key = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut *key).map_err(|_| Error::Randomness)?;
+        let context = b"cmsg.private-replacement-inspection.v1";
+        let mut candidate = Self::restore_with_clock(
+            &self.snapshot(&key, context)?, &key, context, Arc::new(InspectionClock(at)),
+        )?;
+        let result = inspect(&mut candidate)?;
+        candidate.clock = self.clock.clone();
+        Ok((candidate, result))
+    }
+
+    /// A replacement invitation starts with exactly two current root-authorized
+    /// device leaves. Additional devices require normal authenticated enrollment.
+    pub(crate) fn replacement_peer(&self) -> Result<String, Error> {
+        let own = self.member_id()?;
+        if self.device_authorization()?.is_none() { return Err(Error::Admission); }
+        let group = self.group.as_ref().ok_or(Error::InvalidState)?;
+        let trust = self.trust.as_ref().ok_or(Error::Admission)?;
+        let now = self.clock.now()?;
+        let members: Vec<_> = group.members().collect();
+        if members.len() != 2 { return Err(Error::Admission); }
+        let mut peer = None;
+        let mut self_found = false;
+        for leaf in members {
+            let id = verify_credential(&leaf.credential, &leaf.signature_key, trust, now)?;
+            if credential_parts(&leaf.credential)?.1.is_none() { return Err(Error::Admission); }
+            if id == own {
+                if self_found || leaf.signature_key != self.chat_public_key() { return Err(Error::Admission); }
+                self_found = true;
+            } else if peer.replace(id).is_some() { return Err(Error::Admission); }
+        }
+        if !self_found { return Err(Error::Admission); }
+        peer.ok_or(Error::Admission)
+    }
+
     /// Restores the exact saved ratchet state. Authenticating an old valid snapshot
     /// cannot detect rollback: monotonic local persistence is an integration need.
     pub fn restore(sealed: &[u8], wrapping_key: &[u8; 32], context: &[u8]) -> Result<Self, Error> {

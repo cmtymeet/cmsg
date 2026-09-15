@@ -64,13 +64,17 @@ async function authority() {
 
 async function member(issuer) {
   const identity = new BrowserIdentity(issuer.trust.community_id);
+  return { identity, ...await device(issuer, identity) };
+}
+
+async function device(issuer, identity) {
   const member = new BrowserMember();
   const key = member.chatPublicKey();
   const now = Math.floor(Date.now() / 1000);
   const certificate = identity.authorizeDevice(key, now - 1, now + 3600);
   const grant = await issuer.grant(identity.memberId(), key);
   member.bindDeviceAdmission(JSON.stringify(grant), JSON.stringify(issuer.trust), certificate);
-  return { member, identity, certificate, grant };
+  return { member, certificate, grant };
 }
 
 // Published Tor documentation example, used only for address validation in
@@ -176,7 +180,7 @@ export async function runBrowserContract() {
   const recipient = await member(issuer);
   const senderId = sender.identity.memberId();
   const recipientId = recipient.identity.memberId();
-  const senderInbox = new BrowserInbox(sender.member);
+  let senderInbox = new BrowserInbox(sender.member);
   const recipientInbox = new BrowserInbox(recipient.member);
   const store = await checkpointStore();
   const sessionKey = crypto.getRandomValues(new Uint8Array(32));
@@ -294,6 +298,95 @@ export async function runBrowserContract() {
   leaseEndpoint.free();
   const disconnect = JSON.parse(senderInbox.signDisconnect(2, Math.floor(Date.now() / 1000) + 60));
   assert(disconnect.endpoint === null && disconnect.sequence === 2, 'typed disconnect');
+
+  const queuedBeforeReplacement = await senderInbox.sendText('old group queued data', sessionKey, sessionContext, saveSender);
+  const replacementClose = await recipientInbox.closeContact(sessionKey, sessionContext, saveRecipient);
+  const replacementClosed = await senderInbox.receive(replacementClose, sessionKey, sessionContext, saveSender);
+  assert(replacementClosed.kind === 'contactClosed', 'replacement starts from owned closure');
+  replacementClosed.free();
+  const senderReplacement = await device(issuer, sender.identity);
+  const recipientReplacement = await device(issuer, recipient.identity);
+  const senderReplacementKey = senderReplacement.member.chatPublicKey();
+  const recipientReplacementKey = recipientReplacement.member.chatPublicKey();
+  const replacementPackage = senderReplacement.member.keyPackage();
+  await store.persist('replacement-member')(
+    senderReplacement.member.snapshot(sessionKey, sessionContext), [replacementPackage]);
+  const replacementNonce = crypto.getRandomValues(new Uint8Array(32));
+  const replacementDeadline = Math.floor(Date.now() / 1000) + 300;
+  await rejects(() => recipientInbox.initiateReplacement(recipientReplacement.member,
+    replacementPackage, replacementNonce, replacementDeadline, 64, sessionKey, sessionContext,
+    async () => false), 'replacement initiation requires durability');
+  assert(sameBytes(recipientReplacement.member.chatPublicKey(), recipientReplacementKey)
+    && recipientInbox.isClosed(senderId), 'failed replacement preserves handle and owned block');
+  const replacementInvitation = await recipientInbox.initiateReplacement(recipientReplacement.member,
+    replacementPackage, replacementNonce, replacementDeadline, 64, sessionKey, sessionContext, saveRecipient);
+  const replacementWelcome = replacementInvitation.welcome;
+  const replacementControl = replacementInvitation.control;
+  replacementInvitation.free();
+  const replacementOutbox = (await store.read('recipient')).outbound;
+  assert(sameBytes(replacementOutbox[0], replacementWelcome) && sameBytes(replacementOutbox[1], replacementControl),
+    'replacement bundle committed atomically with checkpoint');
+  assert(!sameBytes(recipientReplacement.member.chatPublicKey(), recipientReplacementKey), 'initiator replacement handle retired after commit');
+  throws(() => recipientReplacement.member.sendBytes(binary), 'retired external handle has no joined group');
+  const replacementPreview = JSON.parse(senderInbox.previewReplacement(senderReplacement.member,
+    replacementWelcome, replacementControl));
+  assert(replacementPreview.inviter === recipientId
+    && sameBytes(replacementPreview.introductionId, replacementNonce)
+    && replacementPreview.groupId.length > 0
+    && replacementPreview.policy.response_deadline === replacementDeadline
+    && replacementPreview.policy.max_intro_bytes === 64,
+    'recipient preview authenticates inviter, nonce, group and bounded policy');
+  const tamperedReplacementControl = replacementControl.slice();
+  tamperedReplacementControl[tamperedReplacementControl.length - 1] ^= 1;
+  throws(() => senderInbox.previewReplacement(senderReplacement.member,
+    replacementWelcome, tamperedReplacementControl), 'recipient preview rejects tampered control');
+  assert(sameBytes(senderReplacement.member.chatPublicKey(), senderReplacementKey)
+    && senderInbox.isClosed(recipientId), 'preview preserves replacement handle and local contact state');
+  let replacementRedemptions = 0;
+  const pendingReplacement = async opaque => {
+    replacementRedemptions += 1;
+    assert(sameBytes(opaque, [9, 4, 1]), 'replacement uses fresh opaque claim');
+    const saved = BrowserInbox.restore((await store.read('sender')).checkpoint, sessionKey, sessionContext);
+    assert(sameBytes(saved.pendingWelcome(), replacementWelcome)
+      && sameBytes(saved.pendingReplacementControl(), replacementControl), 'exact replacement bundle durable before spend');
+    saved.free();
+    return 'pending';
+  };
+  assert(await senderInbox.acceptReplacement(senderReplacement.member, replacementWelcome, replacementControl,
+    undefined, sessionKey, sessionContext, saveSender, pendingReplacement) === 'needsPermit', 'known contact replacement still needs fresh admission');
+  assert(replacementRedemptions === 0 && sameBytes(senderReplacement.member.chatPublicKey(), senderReplacementKey),
+    'missing replacement permit preserves external handle');
+  await rejects(() => senderInbox.acceptReplacement(senderReplacement.member, replacementWelcome, replacementControl,
+    new Uint8Array([9, 4, 1]), sessionKey, sessionContext, async () => false, pendingReplacement),
+    'failed replacement checkpoint cannot spend');
+  assert(replacementRedemptions === 0 && sameBytes(senderReplacement.member.chatPublicKey(), senderReplacementKey),
+    'failed pending checkpoint preserves retry handle');
+  assert(await senderInbox.acceptReplacement(senderReplacement.member, replacementWelcome, replacementControl,
+    new Uint8Array([9, 4, 1]), sessionKey, sessionContext, saveSender, pendingReplacement) === 'pending',
+    'ambiguous replacement keeps durable pending intent');
+  assert(!sameBytes(senderReplacement.member.chatPublicKey(), senderReplacementKey), 'pending checkpoint retires external recipient handle');
+  senderInbox.free();
+  senderInbox = BrowserInbox.restore((await store.read('sender')).checkpoint, sessionKey, sessionContext);
+  assert(await senderInbox.retryPendingReplacement(sessionKey, sessionContext, saveSender, async opaque => {
+    replacementRedemptions += 1;
+    assert(sameBytes(opaque, [9, 4, 1]), 'restored retry retains exact original claim');
+    return 'accepted';
+  }) === 'joined', 'restored replacement retry joins after fresh admission');
+  assert(replacementRedemptions === 2 && senderInbox.pendingReplacementControl() === undefined,
+    'successful retry clears pending control');
+  await rejects(() => senderInbox.receive(queuedBeforeReplacement, sessionKey, sessionContext, saveSender), 'old group ciphertext cannot enter replacement');
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'replacement recipient waits for actual intro');
+  const replacementIntro = await recipientInbox.sendText('replacement introduction', sessionKey, sessionContext, saveRecipient);
+  await rejects(() => recipientInbox.sendText('second intro', sessionKey, sessionContext, saveRecipient), 'replacement gets only one introduction');
+  const replacementReceived = await senderInbox.receive(replacementIntro, sessionKey, sessionContext, saveSender);
+  assert(replacementReceived.text === 'replacement introduction', 'replacement group receives authentic introduction');
+  replacementReceived.free();
+  const replacementAnswer = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
+  const replacementAnswered = await recipientInbox.receive(replacementAnswer, sessionKey, sessionContext, saveRecipient);
+  assert(sameBytes(replacementAnswered.bytes, binary), 'replacement group exchanges authentic answer');
+  replacementAnswered.free();
+  senderReplacement.member.free(); recipientReplacement.member.free();
+  passed.push('generated JS API + IndexedDB: fresh-admission replacement group, durable handle transfer, exact restored pending retry and one-introduction gate');
   senderInbox.free(); recipientInbox.free(); sender.identity.free(); recipient.identity.free();
   sessionKey.fill(0); store.close();
   passed.push('generated JS API + IndexedDB: bounded intro/reply, owner-only fresh restart, private archived receipts, stale traffic rejection and durable checkpoint/outbox');

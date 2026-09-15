@@ -37,7 +37,7 @@ pub use framing::FramedStream;
 pub use identity::{
     member_id_for_root, verify_device_authorization, DeviceAuthorization, MemberIdentity,
 };
-pub use inbox::{Acceptance, FirstContactPolicy, FirstContactRole, Inbox, Redemption};
+pub use inbox::{Acceptance, FirstContactPolicy, FirstContactRole, Inbox, Redemption, ReopeningInvitation, ReplacementPreview};
 pub use lifecycle::Clock;
 pub use member::{DataMessage, Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;

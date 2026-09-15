@@ -11,6 +11,10 @@ use zeroize::{Zeroize, Zeroizing};
 #[path = "inbox_policy.rs"]
 mod owner_policy;
 use owner_policy::DirectionalContact;
+#[path = "inbox_replacement.rs"]
+mod replacement_policy;
+pub use replacement_policy::{ReopeningInvitation, ReplacementPreview};
+use replacement_policy::PendingReplacement;
 
 const CONTACT_DATA_PREFIX: &[u8] = b"cmsg.contact-data.v2\0";
 const CONTACT_DIRECTIVE_PREFIX: &[u8] = b"cmsg.contact-directive.v1\0";
@@ -168,6 +172,8 @@ struct Pending {
     inviter: String,
     welcome_hash: [u8; 32],
     recipient_redemption: Vec<u8>,
+    #[serde(default)]
+    replacement: Option<PendingReplacement>,
 }
 impl Drop for Pending {
     fn drop(&mut self) {
@@ -262,6 +268,9 @@ impl Inbox {
         mut redeem: impl FnMut(&[u8]) -> Redemption,
     ) -> Result<Acceptance, Error> {
         self.check_binding(recipient)?;
+        if self.state.pending.as_ref().is_some_and(|pending| pending.replacement.is_some()) {
+            return Ok(Acceptance::Busy);
+        }
         if welcome.len() > MAX_WIRE_BYTES {
             return Err(Error::InvalidMessage);
         }
@@ -299,6 +308,7 @@ impl Inbox {
                 inviter: inviter.clone(),
                 welcome_hash: hash,
                 recipient_redemption: attempt.to_vec(),
+                replacement: None,
             });
         }
         if !known {
@@ -690,6 +700,7 @@ impl Inbox {
         self.apply_deadlines(member, key, context, |checkpoint| persist(checkpoint, &[]))?;
         let peer = self.contact_peer(member)?;
         self.check_exclusions(member)?;
+        self.check_selected_group(&peer, member)?;
         let intro = self
             .state
             .introductions
@@ -802,6 +813,7 @@ impl Inbox {
                 Received::MembershipChanged
             }
             Received::Bytes(message) if message.bytes.starts_with(CONTACT_DATA_PREFIX) => {
+                changed.check_selected_group(&peer, &candidate)?;
                 let record = &message.bytes[CONTACT_DATA_PREFIX.len()..];
                 if peer_excluded
                     || message.member_id != peer
@@ -1633,8 +1645,9 @@ impl Inbox {
             }
         }
         if let Some(pending) = &self.state.pending {
-            if self.is_blocked(&pending.inviter)
-                || self.is_known(&pending.inviter)
+            if (pending.replacement.is_none()
+                    && (self.is_blocked(&pending.inviter) || self.is_known(&pending.inviter)))
+                || self.state.blocked.contains(&pending.inviter)
                 || !crate::admission::valid_member_id(&pending.inviter)
                 || pending.recipient_redemption.is_empty()
                 || pending.recipient_redemption.len() > 8192
@@ -1643,6 +1656,10 @@ impl Inbox {
                 || <[u8; 32]>::from(Sha256::digest(&pending.welcome)) != pending.welcome_hash
             {
                 return Err(Error::InvalidStore);
+            }
+            if pending.replacement.is_some() {
+                self.validate_pending_replacement(member, pending).map_err(|_| Error::InvalidStore)?;
+                return Ok(());
             }
             // Authenticate pending bindings at restore without requiring old
             // admission to remain unexpired. accept rechecks current admission
