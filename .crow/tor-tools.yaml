@@ -9,6 +9,7 @@ variables:
   ARTIFACT_ROOT: {default: ""}
   TOOL_ROOT: {default: ""}
   UV_BIN: {default: ""}
+  MAKE_BIN: {default: ""}
   OPENSSL_INCLUDE_DIR: {default: ""}
   OPENSSL_LIB_DIR: {default: ""}
   LIBEVENT_INCLUDE_DIR: {default: ""}

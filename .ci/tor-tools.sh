@@ -7,10 +7,18 @@ test -d "$OPENSSL_INCLUDE_DIR/openssl"
 test -d "$LIBEVENT_INCLUDE_DIR/event2"
 test -f "$ZLIB_INCLUDE_DIR/zlib.h"
 test -x "$UV_BIN"
+test -x "$MAKE_BIN"
+export MAKE="$MAKE_BIN"
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/tor-tools"
 mkdir -p "$TOOL_ROOT" "$artifact_dir"
 scratch="$(mktemp -d "$TOOL_ROOT/.build-XXXXXXXX")"
-trap 'rm -rf -- "$scratch"' EXIT
+cleanup() {
+  if test -f "$scratch/tor-0.4.9.12/config.log"; then
+    cp "$scratch/tor-0.4.9.12/config.log" "$artifact_dir/tor-config.log"
+  fi
+  rm -rf -- "$scratch"
+}
+trap cleanup EXIT
 version=0.4.9.12
 source_hash=c0d307c9dcdaee4848a8ca53e9d6c4ec92823e4f30be12790b0fbddfc6515f5b
 curl --fail --silent --show-error --location --max-time 180 \
@@ -24,11 +32,11 @@ tor_prefix="$TOOL_ROOT/tor-$version-$CI_COMMIT_SHA"
 test ! -e "$tor_prefix"
 (
   cd "$scratch/tor-$version"
-  timeout 180 ./configure --prefix="$tor_prefix" --disable-asciidoc --disable-unittests \
+  timeout 180 ./configure --prefix="$tor_prefix" --disable-dependency-tracking --disable-asciidoc --disable-unittests \
     --disable-manpage --disable-html-manual --disable-lzma --disable-zstd \
     --disable-system-torrc
-  timeout 1200 make -j2
-  timeout 120 make install
+  timeout 1200 "$MAKE_BIN" -j2
+  timeout 120 "$MAKE_BIN" install
 ) 2>&1 | tee "$artifact_dir/tor-build.log"
 "$tor_prefix/bin/tor" --version > "$artifact_dir/tor-version.txt"
 test -x "$tor_prefix/bin/tor-gencert"
