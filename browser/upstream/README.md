@@ -16,6 +16,14 @@ that checkout, preserve it as an artifact, and build the Wasm and JS together.
 The released npm artifact must not be relabeled as a patched build. Record the
 patched source revision, patch hash, Cargo/npm locks and artifact hash.
 
+`tor-js-gateway-response.patch` bounds response heads to 64 KiB and CONNECT
+refusal bodies to 4 KiB, rejects ambiguous length fields, honors a declared body
+length without waiting for FIN, and keeps the caller's abort active through the
+refusal body. Each rejected CONNECT releases its own KPS stream. Run 64 exposed
+the upstream bug: the gateway returned non-relay 403 and the canary saw zero TCP
+connections, but its browser client hung waiting for EOF on the kept-open stream.
+The correction includes parser regressions; their execution is still pending.
+
 ## Security review boundary
 
 The Tor protocol and circuit cryptography come from Arti. This integration does
@@ -209,7 +217,10 @@ requires the real KPS gateway to reject a CONNECT to an owned non-relay TCP
 canary with 403 while the canary records zero connections. It also requires
 the actual Wasm onion API to reject IP, URL, malformed onion and injected route
 inputs. The build runs the gateway's existing tunnel validation/resource tests
-and preserves their output. These new assertions still need a completed CI run.
+and browser parser tests, preserving their output. Run 64 passed the native
+gateway tests; complete browser route-boundary assertions are still pending.
+An independent gateway assertion failure is retained in the runtime evidence
+while service diagnostics continue; it still fails the overall result.
 
 The remaining contract requires two browser clients to publish different onions
 and exchange byte frames. A separate native
@@ -225,3 +236,6 @@ UDP or browser background request. An empty tab request list does not establish
 process-wide network silence; run 62's Chromium diagnostics included background
 GCM errors. Gateway restriction and malformed-route assertions support their
 specific boundaries, not a general browser anonymity claim.
+The separate Crow run 65 isolation probe was denied by the worker's existing
+security policy (`unshare: Operation not permitted`). It changed no host network
+configuration. Process-wide network confinement remains unverified.

@@ -80,7 +80,7 @@ def main():
         if git(checkout, "status", "--porcelain"):
             raise SystemExit(f"{section} checkout must be clean and isolated")
 
-    patches = [(tor_js, "tor-js-onion-client.patch")]
+    patches = [(tor_js, "tor-js-onion-client.patch"), (tor_js, "tor-js-gateway-response.patch")]
     post_overlay_patches = []
     overlays = []
     if stage in {"streams", "service", "test-network"}:

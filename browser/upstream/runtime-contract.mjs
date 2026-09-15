@@ -36,7 +36,7 @@ async function syntheticMember() {
 }
 
 export async function runTorRuntimeContract() {
-  const progress = { testNetworkOnly: true, stage: 'initialization', passed: [] };
+  const progress = { testNetworkOnly: true, stage: 'initialization', passed: [], failed: [] };
   globalThis.__cmsgTorRuntime = progress;
   await init({ module_or_path: new URL('../pkg/cmsg_bg.wasm', import.meta.url) });
   const fixture = await (await fetch('/fixture.json', { cache: 'no-store' })).json();
@@ -53,18 +53,29 @@ export async function runTorRuntimeContract() {
     check(/^127\.0\.0\.1:\d+$/.test(fixture.nonRelayCanary), 'owned loopback canary');
     const gateway = new KpsGateway(fixture.gateway);
     let forbidden = false;
+    progress.gatewayCanary = 'pending';
     try {
       const socket = await bounded(gateway.connect(fixture.nonRelayCanary, {
         signal: AbortSignal.timeout(15_000),
       }), 20_000);
       socket.close();
+      progress.gatewayCanary = 'unexpected-tunnel';
     } catch (error) {
-      forbidden = String(error) === `Error: CONNECT ${fixture.nonRelayCanary}: 403 target is not an advertised Tor relay`;
+      const detail = String(error);
+      forbidden = detail === `Error: CONNECT ${fixture.nonRelayCanary}: 403 target is not an advertised Tor relay`;
+      progress.gatewayCanary = forbidden ? 'expected-403'
+        : /timed out|deadline/i.test(detail) ? 'deadline'
+        : /framing|body|response head/i.test(detail) ? 'response-framing'
+        : 'other-error';
     } finally { gateway.close(); }
-    check(forbidden, 'real KPS gateway returned non-relay 403');
-    check((await (await fetch('/__canary', { cache: 'no-store' })).json()).connections === 0,
-      'gateway rejected before opening a non-relay TCP socket');
-    passed.push('actual browser WebRTC/KPS non-relay CONNECT rejected with 403 and zero owned canary connections');
+    const canaryUntouched = (await (await fetch('/__canary', { cache: 'no-store' })).json()).connections === 0;
+    if (forbidden && canaryUntouched) {
+      passed.push('actual browser WebRTC/KPS non-relay CONNECT rejected with 403 and zero owned canary connections');
+    } else {
+      // Retain failure and continue independent service diagnostics. The final
+      // result still fails unless exact 403 AND zero connections were observed.
+      progress.failed.push('real KPS non-relay 403 with zero canary connections was not verified');
+    }
     progress.stage = 'client-bootstrap';
     for (let i = 0; i < 2; i++) clients.push(new TorClient({ gateway: fixture.gateway,
       testNetwork: JSON.stringify(fixture.arti), storage: new storage.MemoryStorage(),
@@ -140,6 +151,7 @@ export async function runTorRuntimeContract() {
     const cancelled = await bounded(pending.then(() => false, () => true), 5_000);
     check(cancelled, 'service close cancels accept');
     passed.push('browser onion service close cancels pending accept');
+    check(progress.failed.length === 0, 'gateway boundary assertions failed');
     progress.stage = 'complete';
     return { testNetworkOnly: true, nativePeer: nativeEvidence, passed };
   } finally {

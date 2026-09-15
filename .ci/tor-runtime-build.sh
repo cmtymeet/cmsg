@@ -24,6 +24,8 @@ timeout 1800 cargo build --locked --example tor_browser_peer
 (
   cd "$torjs"
   timeout 600 npm ci --ignore-scripts --no-audit --no-fund
+  timeout 120 node --test test/unit/kpsGateway.test.mjs \
+    2>&1 | tee "$artifact/gateway-browser-parser-tests.log"
   # The exact upstream build includes a README gzip-size comparison against the
   # stock artifact. Preserve every code/declaration build check; omit only that
   # historical size assertion for this explicitly labelled experimental package.
