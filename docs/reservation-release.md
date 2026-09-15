@@ -49,10 +49,12 @@ no claim that both remote budgets remain locked at one instantaneous global
 time. Full rollback of every copy or deliberate device-key cloning remains
 outside local journal guarantees.
 
-Native test doubles exercise authorization/storage boundaries; they are not
-proof-validity evidence. Actual proof composition and native/Wasm/IndexedDB
-results must identify the tested revisions. Source additions alone are not
-validation results.
+At `80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`, Crow10/76 passed
+161 native tests and Wasm checking, including four reservation-gate tests;
+Crow10/77 passed 21 Chromium contract groups. Native verifier doubles exercise
+authorization/storage boundaries, not proof validity. The separate cfrm
+account-state experiment records actual proof-composition results and their
+source pins.
 
 Verification runs remote proof work first, refreshes the trusted contact context,
 and queries current own state last. A verifier also returns `validUntil` as

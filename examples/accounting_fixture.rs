@@ -3,7 +3,7 @@
 //! This fixture does not authorize production genesis/reservations or balances.
 #[path = "../tests/common/mod.rs"]
 mod common;
-#[path="accounting_fixture/reservation.rs"]
+#[path = "accounting_fixture/reservation.rs"]
 mod reservation;
 use cmsg::{
     AccountingAcknowledgment, AccountingDelegation, AccountingReceipt, ContactResolutionKind,
@@ -45,8 +45,16 @@ enum Request {
     },
     Answer,
     PrepareGate,
-    AuthorizeIncoming { #[serde(rename="outgoingPresentation")] outgoing_presentation:Value },
-    BindGate { #[serde(rename="outgoingPresentation")] outgoing_presentation:Value, #[serde(rename="incomingPresentation")] incoming_presentation:Value },
+    AuthorizeIncoming {
+        #[serde(rename = "outgoingPresentation")]
+        outgoing_presentation: Value,
+    },
+    BindGate {
+        #[serde(rename = "outgoingPresentation")]
+        outgoing_presentation: Value,
+        #[serde(rename = "incomingPresentation")]
+        incoming_presentation: Value,
+    },
     Advance {
         now: u64,
     },
@@ -143,7 +151,7 @@ fn enroll(keys: &[PublicKey], peer_expires: u64) -> Result<State> {
     }
     pair.ad = originals[0].clone();
     pair.bd = originals[1].clone();
-    let bridge=reservation::Bridge::configured(&mut pair)?;
+    let bridge = reservation::Bridge::configured(&mut pair)?;
     Ok(State {
         pair,
         bridge,
@@ -162,11 +170,37 @@ fn bound_original(state: &State, d: &AccountingDelegation) -> Result<()> {
     }
     Ok(())
 }
-fn send_intro(state:&mut State)->Result<()> {
-    let storage=state.bridge.clone();
-    let wire=core(state.pair.ai.send_contact(&mut state.pair.a,b"introduction",&KEY,CONTEXT,|checkpoint,_|match &storage {Some(s)=>s.save(0,checkpoint),None=>Ok(())}))?;
-    core(state.pair.bi.receive_contact(&mut state.pair.b,&wire,&KEY,CONTEXT,|checkpoint|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;
-    if let Some(bridge)=&storage {bridge.flush(&mut state.pair)?;}Ok(())
+fn send_intro(state: &mut State) -> Result<()> {
+    let storage = state.bridge.clone();
+    let wire = core(state.pair.ai.send_contact(
+        &mut state.pair.a,
+        b"introduction",
+        &KEY,
+        CONTEXT,
+        |checkpoint, _| match &storage {
+            Some(s) => s.save(0, checkpoint),
+            None => Ok(()),
+        },
+    ))?;
+    core(
+        state
+            .pair
+            .bi
+            .receive_contact(
+                &mut state.pair.b,
+                &wire,
+                &KEY,
+                CONTEXT,
+                |checkpoint| match &storage {
+                    Some(s) => s.save(1, checkpoint),
+                    None => Ok(()),
+                },
+            ),
+    )?;
+    if let Some(bridge) = &storage {
+        bridge.flush(&mut state.pair)?;
+    }
+    Ok(())
 }
 fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     if let Request::Enroll { keys, peer_expires } = request {
@@ -191,27 +225,74 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     let state = state.as_mut().ok_or("enroll first")?;
     match request {
         Request::PrepareGate => {
-            state.bridge.as_ref().ok_or("trusted peer verifier is not configured")?;
-            let contexts=core(state.pair.ai.reservation_contexts(&state.pair.a))?;
-            if contexts!=core(state.pair.bi.reservation_contexts(&state.pair.b))? {return Err("peer context disagreement");}
-            serde_json::to_value(contexts).map_err(|_|"context encoding")
+            state
+                .bridge
+                .as_ref()
+                .ok_or("trusted peer verifier is not configured")?;
+            let contexts = core(state.pair.ai.reservation_contexts(&state.pair.a))?;
+            if contexts != core(state.pair.bi.reservation_contexts(&state.pair.b))? {
+                return Err("peer context disagreement");
+            }
+            serde_json::to_value(contexts).map_err(|_| "context encoding")
         }
-        Request::AuthorizeIncoming {outgoing_presentation} => {
-            let mut verifier=state.bridge.clone().ok_or("trusted peer verifier is not configured")?;let storage=verifier.clone();
-            let evidence=serde_json::to_vec(&outgoing_presentation).map_err(|_|"presentation encoding")?;
-            core(state.pair.bi.authorize_incoming_reservation(&state.pair.b,&evidence,&mut verifier,&KEY,CONTEXT,|checkpoint|storage.save(1,checkpoint)))?;
+        Request::AuthorizeIncoming {
+            outgoing_presentation,
+        } => {
+            let mut verifier = state
+                .bridge
+                .clone()
+                .ok_or("trusted peer verifier is not configured")?;
+            let storage = verifier.clone();
+            let evidence =
+                serde_json::to_vec(&outgoing_presentation).map_err(|_| "presentation encoding")?;
+            core(state.pair.bi.authorize_incoming_reservation(
+                &state.pair.b,
+                &evidence,
+                &mut verifier,
+                &KEY,
+                CONTEXT,
+                |checkpoint| storage.save(1, checkpoint),
+            ))?;
             Ok(json!({"authorized":true}))
         }
-        Request::BindGate {outgoing_presentation,incoming_presentation} => {
-            let mut verifier=state.bridge.clone().ok_or("trusted peer verifier is not configured")?;let storage=verifier.clone();
-            let a=serde_json::to_vec(&outgoing_presentation).map_err(|_|"presentation encoding")?;
-            let b=serde_json::to_vec(&incoming_presentation).map_err(|_|"presentation encoding")?;
-            core(state.pair.ai.bind_active_reservations(&state.pair.a,&a,&b,&mut verifier,&KEY,CONTEXT,|checkpoint|storage.save(0,checkpoint)))?;
-            core(state.pair.bi.bind_active_reservations(&state.pair.b,&a,&b,&mut verifier,&KEY,CONTEXT,|checkpoint|storage.save(1,checkpoint)))?;
+        Request::BindGate {
+            outgoing_presentation,
+            incoming_presentation,
+        } => {
+            let mut verifier = state
+                .bridge
+                .clone()
+                .ok_or("trusted peer verifier is not configured")?;
+            let storage = verifier.clone();
+            let a =
+                serde_json::to_vec(&outgoing_presentation).map_err(|_| "presentation encoding")?;
+            let b =
+                serde_json::to_vec(&incoming_presentation).map_err(|_| "presentation encoding")?;
+            core(state.pair.ai.bind_active_reservations(
+                &state.pair.a,
+                &a,
+                &b,
+                &mut verifier,
+                &KEY,
+                CONTEXT,
+                |checkpoint| storage.save(0, checkpoint),
+            ))?;
+            core(state.pair.bi.bind_active_reservations(
+                &state.pair.b,
+                &a,
+                &b,
+                &mut verifier,
+                &KEY,
+                CONTEXT,
+                |checkpoint| storage.save(1, checkpoint),
+            ))?;
             Ok(json!({"bound":true}))
         }
         Request::Advance { now } => {
-            if !matches!(state.phase, 1 | 2) || !matches!(now, 300 | 600) || state.pair.time.0.load(Ordering::Relaxed) > now {
+            if !matches!(state.phase, 1 | 2)
+                || !matches!(now, 300 | 600)
+                || state.pair.time.0.load(Ordering::Relaxed) > now
+            {
                 return Err("fixture clock transition");
             }
             state.pair.time.0.store(now, Ordering::Relaxed);
@@ -222,8 +303,17 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
                 return Err("fixture scenario already used");
             }
             send_intro(state)?;
-            let storage=state.bridge.clone();
-            let wire=core(state.pair.bi.send_contact(&mut state.pair.b,b"answer",&KEY,CONTEXT,|checkpoint,_|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;
+            let storage = state.bridge.clone();
+            let wire = core(state.pair.bi.send_contact(
+                &mut state.pair.b,
+                b"answer",
+                &KEY,
+                CONTEXT,
+                |checkpoint, _| match &storage {
+                    Some(s) => s.save(1, checkpoint),
+                    None => Ok(()),
+                },
+            ))?;
             core(state.pair.ai.receive_contact(
                 &mut state.pair.a,
                 &wire,
@@ -234,7 +324,9 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
                     None => Ok(()),
                 },
             ))?;
-            if let Some(bridge)=&state.bridge {bridge.flush(&mut state.pair)?;}
+            if let Some(bridge) = &state.bridge {
+                bridge.flush(&mut state.pair)?;
+            }
             state.phase = 1;
             let receipt = core(state.pair.bi.prepare_accounting_receipt(
                 state.pair.ar.member_id(),
@@ -251,20 +343,36 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
             }
             send_intro(state)?;
             state.pair.time.0.store(now, Ordering::Relaxed);
-            let storage=state.bridge.clone();
+            let storage = state.bridge.clone();
             core(state.pair.bi.resolve_introduction(
                 state.pair.ar.member_id(),
                 ContactResolutionKind::ClosedForever,
                 &state.pair.b,
                 &KEY,
                 CONTEXT,
-                |checkpoint|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())},
+                |checkpoint| match &storage {
+                    Some(s) => s.save(1, checkpoint),
+                    None => Ok(()),
+                },
             ))?;
-            if let Some(bridge)=&storage {
-                let (restored,member)=core(cmsg::Inbox::restore_with_clock(&bridge.load(1)?,&KEY,CONTEXT,state.pair.time.clone()))?;
-                if !restored.is_closed(state.pair.ar.member_id()) || restored.outbound_resolution_receipt(state.pair.ar.member_id())
-                    !=state.pair.bi.outbound_resolution_receipt(state.pair.ar.member_id()) {return Err("durable Close recovery mismatch");}
-                state.pair.bi=restored;state.pair.b=member;
+            if let Some(bridge) = &storage {
+                let (restored, member) = core(cmsg::Inbox::restore_with_clock(
+                    &bridge.load(1)?,
+                    &KEY,
+                    CONTEXT,
+                    state.pair.time.clone(),
+                ))?;
+                if !restored.is_closed(state.pair.ar.member_id())
+                    || restored.outbound_resolution_receipt(state.pair.ar.member_id())
+                        != state
+                            .pair
+                            .bi
+                            .outbound_resolution_receipt(state.pair.ar.member_id())
+                {
+                    return Err("durable Close recovery mismatch");
+                }
+                state.pair.bi = restored;
+                state.pair.b = member;
             }
             state.phase = 2;
             let receipt = core(state.pair.bi.prepare_accounting_receipt(

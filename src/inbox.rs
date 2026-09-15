@@ -15,10 +15,10 @@ use owner_policy::DirectionalContact;
 mod accounting_policy;
 #[path = "inbox_live.rs"]
 mod live_policy;
-#[path = "inbox_reservation.rs"]
-mod reservation_policy;
 #[path = "inbox_replacement.rs"]
 mod replacement_policy;
+#[path = "inbox_reservation.rs"]
+mod reservation_policy;
 use replacement_policy::PendingReplacement;
 pub use replacement_policy::{ReopeningInvitation, ReplacementPreview};
 
@@ -49,15 +49,38 @@ impl ContactSync {
     fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
         if self.reservations.is_some() {
             return serde_json::to_vec(&serde_json::json!([
-                "cmsg.contact-sync.v3",self.community_id,self.owner_id,self.issued_at,self.device_public_key,
-                self.credential,self.known,self.closed,self.introductions,self.directional,self.archived,self.live,self.reservations,
-            ])).map_err(|_|Error::InvalidMessage);
+                "cmsg.contact-sync.v3",
+                self.community_id,
+                self.owner_id,
+                self.issued_at,
+                self.device_public_key,
+                self.credential,
+                self.known,
+                self.closed,
+                self.introductions,
+                self.directional,
+                self.archived,
+                self.live,
+                self.reservations,
+            ]))
+            .map_err(|_| Error::InvalidMessage);
         }
         if self.live.is_some() {
             return serde_json::to_vec(&serde_json::json!([
-                "cmsg.contact-sync.v2",self.community_id,self.owner_id,self.issued_at,self.device_public_key,
-                self.credential,self.known,self.closed,self.introductions,self.directional,self.archived,self.live,
-            ])).map_err(|_|Error::InvalidMessage);
+                "cmsg.contact-sync.v2",
+                self.community_id,
+                self.owner_id,
+                self.issued_at,
+                self.device_public_key,
+                self.credential,
+                self.known,
+                self.closed,
+                self.introductions,
+                self.directional,
+                self.archived,
+                self.live,
+            ]))
+            .map_err(|_| Error::InvalidMessage);
         }
         serde_json::to_vec(&serde_json::json!([
             "cmsg.contact-sync.v1",
@@ -155,7 +178,7 @@ struct StrictIntroduction {
 #[serde(deny_unknown_fields)]
 struct InboxState {
     #[serde(default)]
-    publication_version:u64,
+    publication_version: u64,
     community_id: String,
     recipient_id: String,
     root_authorized: bool,
@@ -246,7 +269,7 @@ impl Inbox {
     pub fn new(recipient: &Member) -> Result<Self, Error> {
         Ok(Self {
             state: InboxState {
-                publication_version:0,
+                publication_version: 0,
                 community_id: recipient
                     .trust
                     .as_ref()
@@ -664,17 +687,27 @@ impl Inbox {
             })
             .collect();
         let mut changed = self.duplicate();
-        let ended=changed.expire_live_sessions(now);
+        let ended = changed.expire_live_sessions(now);
         if self.state.live.is_some() || self.state.reservations.is_some() {
-            let mut expired_count=0;
+            let mut expired_count = 0;
             for peer in &expired {
-                let nonce=changed.state.introductions.get(peer).ok_or(Error::InvalidState)?.id;
-                expired_count+=usize::from(changed.expire_live_introduction(peer,&nonce));
+                let nonce = changed
+                    .state
+                    .introductions
+                    .get(peer)
+                    .ok_or(Error::InvalidState)?
+                    .id;
+                expired_count += usize::from(changed.expire_live_introduction(peer, &nonce));
             }
-            if ended+expired_count>0 {persist(&changed.seal(member,key,context)?)?;*self=changed;}
-            return Ok(ended+expired_count);
+            if ended + expired_count > 0 {
+                persist(&changed.seal(member, key, context)?)?;
+                *self = changed;
+            }
+            return Ok(ended + expired_count);
         }
-        if expired.is_empty() && ended==0 { return Ok(0); }
+        if expired.is_empty() && ended == 0 {
+            return Ok(0);
+        }
         for peer in &expired {
             let intro = changed
                 .state
@@ -708,7 +741,7 @@ impl Inbox {
         }
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
-        Ok(expired.len()+ended)
+        Ok(expired.len() + ended)
     }
 
     /// Send one introduction, an actual reply, or established conversation text.
@@ -755,7 +788,7 @@ impl Inbox {
         self.apply_deadlines(member, key, context, |checkpoint| persist(checkpoint, &[]))?;
         self.check_reservation_release(member)?;
         if self.state.live.is_some() {
-            return self.send_live_data(member,bytes,text,None,key,context,persist);
+            return self.send_live_data(member, bytes, text, None, key, context, persist);
         }
         let peer = self.contact_peer(member)?;
         self.check_exclusions(member)?;
@@ -837,8 +870,14 @@ impl Inbox {
         let raw = candidate.receive_policy_excluding(wire, &excluded)?;
         let mut changed = self.duplicate();
         let received = match &raw {
-            Received::Bytes(message) if message.member_id==peer && message.bytes.starts_with(crate::live::PREFIX) => {
-                changed.receive_live_record(&mut candidate,&message.bytes[crate::live::PREFIX.len()..],&peer)?
+            Received::Bytes(message)
+                if message.member_id == peer && message.bytes.starts_with(crate::live::PREFIX) =>
+            {
+                changed.receive_live_record(
+                    &mut candidate,
+                    &message.bytes[crate::live::PREFIX.len()..],
+                    &peer,
+                )?
             }
             Received::Bytes(message)
                 if message.member_id == peer
@@ -876,7 +915,9 @@ impl Inbox {
                 Received::MembershipChanged
             }
             Received::Bytes(message) if message.bytes.starts_with(CONTACT_DATA_PREFIX) => {
-                if changed.state.live.is_some() {return Err(Error::Admission);}
+                if changed.state.live.is_some() {
+                    return Err(Error::Admission);
+                }
                 changed.check_reservation_release(&candidate)?;
                 changed.check_selected_group(&peer, &candidate)?;
                 let record = &message.bytes[CONTACT_DATA_PREFIX.len()..];
@@ -1327,7 +1368,7 @@ impl Inbox {
             .map_err(|_| Error::Admission)?;
         let incoming_state = Self {
             state: InboxState {
-                publication_version:0,
+                publication_version: 0,
                 community_id: sync.community_id.clone(),
                 recipient_id: sync.owner_id.clone(),
                 root_authorized: true,
@@ -1346,9 +1387,19 @@ impl Inbox {
         incoming_state.validate_state(member)?;
         let mut changed = self.duplicate();
         changed.state.known.extend(sync.known.iter().cloned());
-        if let Some(incoming)=&sync.reservations {changed.state.reservations.get_or_insert_with(Default::default).merge(incoming)?;}
-        if let Some(incoming)=&sync.live {
-            changed.state.live.get_or_insert_with(Default::default).merge(incoming)?;
+        if let Some(incoming) = &sync.reservations {
+            changed
+                .state
+                .reservations
+                .get_or_insert_with(Default::default)
+                .merge(incoming)?;
+        }
+        if let Some(incoming) = &sync.live {
+            changed
+                .state
+                .live
+                .get_or_insert_with(Default::default)
+                .merge(incoming)?;
         }
         changed.state.closed.extend(sync.closed.iter().cloned());
         for (peer, incoming) in &sync.directional {
@@ -1527,13 +1578,17 @@ impl Inbox {
     /// Enforce local contact exclusions before encrypting any new text. A group
     /// containing a closed member must remove that member before further sends.
     pub fn send(&self, member: &mut Member, text: &[u8]) -> Result<Vec<u8>, Error> {
-        if self.state.live.is_some() || self.state.reservations.is_some() {return Err(Error::Admission);}
+        if self.state.live.is_some() || self.state.reservations.is_some() {
+            return Err(Error::Admission);
+        }
         self.check_outbound(member)?;
         member.send(text)
     }
 
     pub fn send_bytes(&self, member: &mut Member, bytes: &[u8]) -> Result<Vec<u8>, Error> {
-        if self.state.live.is_some() || self.state.reservations.is_some() {return Err(Error::Admission);}
+        if self.state.live.is_some() || self.state.reservations.is_some() {
+            return Err(Error::Admission);
+        }
         self.check_outbound(member)?;
         member.send_bytes(bytes)
     }
@@ -1579,7 +1634,9 @@ impl Inbox {
     /// changing receive ratchets, or appending history. A control message cannot
     /// silently reintroduce a closed identity under a different device key.
     pub fn receive(&self, member: &mut Member, wire: &[u8]) -> Result<Received, Error> {
-        if self.state.live.is_some() || self.state.reservations.is_some() {return Err(Error::Admission);}
+        if self.state.live.is_some() || self.state.reservations.is_some() {
+            return Err(Error::Admission);
+        }
         self.check_binding(member)?;
         self.check_unresolved(member)?;
         member.receive_excluding(wire, &self.excluded())
@@ -1602,9 +1659,15 @@ impl Inbox {
 
     fn validate_state(&self, member: &Member) -> Result<(), Error> {
         self.check_binding(member)?;
-        if self.state.publication_version>9_007_199_254_740_991 {return Err(Error::InvalidStore);}
-        if let Some(journal)=&self.state.live {journal.validate(member,&self.state.recipient_id)?;}
-        if let Some(journal)=&self.state.reservations {journal.validate(&self.state.recipient_id,&self.state.community_id)?;}
+        if self.state.publication_version > 9_007_199_254_740_991 {
+            return Err(Error::InvalidStore);
+        }
+        if let Some(journal) = &self.state.live {
+            journal.validate(member, &self.state.recipient_id)?;
+        }
+        if let Some(journal) = &self.state.reservations {
+            journal.validate(&self.state.recipient_id, &self.state.community_id)?;
+        }
         if self
             .state
             .known
@@ -1785,10 +1848,15 @@ impl Inbox {
     }
 
     /// Export one encrypted checkpoint containing both policy and MLS state.
-    pub fn publication_version(&self)->u64 {self.state.publication_version}
-    pub(crate) fn advance_publication(&mut self,expected:u64)->Result<u64,Error> {
-        if self.state.publication_version!=expected || expected>=9_007_199_254_740_991 {return Err(Error::InvalidStore);}
-        self.state.publication_version=expected+1;Ok(expected+1)
+    pub fn publication_version(&self) -> u64 {
+        self.state.publication_version
+    }
+    pub(crate) fn advance_publication(&mut self, expected: u64) -> Result<u64, Error> {
+        if self.state.publication_version != expected || expected >= 9_007_199_254_740_991 {
+            return Err(Error::InvalidStore);
+        }
+        self.state.publication_version = expected + 1;
+        Ok(expected + 1)
     }
     pub fn snapshot(
         &self,

@@ -23,9 +23,12 @@ mod member;
 mod profile;
 mod release;
 mod rendezvous;
-mod roster;
 mod reservation;
-pub use reservation::{ReservationContext,ReservationContexts,ReservationExpectation,ReservationPolicy,ReservationVerifier,VerifiedReservation};
+mod roster;
+pub use reservation::{
+    ReservationContext, ReservationContexts, ReservationExpectation, ReservationPolicy,
+    ReservationVerifier, VerifiedReservation,
+};
 mod transport;
 mod vault;
 
@@ -52,7 +55,7 @@ pub use inbox::{
     ReplacementPreview,
 };
 pub use lifecycle::Clock;
-pub use live::{DeliveryStatus,LiveDelivery};
+pub use live::{DeliveryStatus, LiveDelivery};
 pub use member::{DataMessage, Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;
 pub use release::{

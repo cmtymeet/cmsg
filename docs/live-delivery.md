@@ -38,5 +38,9 @@ not establish that a modified client discarded its own copies. Session
 challenge proofs establish a bounded device session, not globally exact
 presence or atomic delivery. No operator receives the history or session log.
 
-New native and actual Wasm/IndexedDB tests cover these boundaries. They are
-source candidates until CI results explicitly identify the tested revision.
+At `80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`, Crow10/76 passed
+161 native tests and Wasm checking, including nine live-delivery tests.
+Crow10/77 passed 21 actual Chromium contract groups, including live delivery,
+the supplied IndexedDB adapter across two connections, competing Wasm instances,
+and separately labeled scripted stream cancellation. This is no new live Tor
+or process-wide network-confinement claim.
