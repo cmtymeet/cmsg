@@ -147,8 +147,10 @@ board statements. There is no generic device-signing or private-key export API.
 
 The `/tor-streams` entrypoint uses the separate pinned `service` build described
 in `upstream/`. Its source provides browser-owned onion publication and raw
-Arti streams. Patch application, compilation and a real browser/native Tor
-round trip remain required evidence; the stock npm TorJS package is rejected.
+Arti streams. The [isolated browser/native Tor contract](upstream/README.md)
+passed at `b23221271f71`, including browser-owned publication and bidirectional
+MLS traffic. That run uses the explicit private-network build; a public-network
+deployment remains unvalidated. The stock npm TorJS package is rejected.
 
 ```js
 import { createTorJsOnionNode } from '@corbet-labs/cmsg/tor-streams';

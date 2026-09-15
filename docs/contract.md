@@ -36,7 +36,7 @@ Rules control participation in this protocol. They cannot prevent consenting peo
 
 These define deployment acceptance, not a claim that every item has passed.
 The [evidence record](browser-first.md#evidence-as-of-the-current-development-work)
-separates current core/browser checks from outstanding Tor runtime, protected-key,
+separates current core/browser and isolated Tor checks from outstanding deployment, protected-key,
 telemetry and production private-accounting validation.
 
 1. A malicious contact-selected endpoint cannot observe the participant's source IP.
