@@ -44,3 +44,26 @@ restart generates fresh service/introduction keys and old key material is never
 restored independently of its replay state. Permanent cmsg identity remains a
 different member root key. This is an implementation path requiring tests,
 not a current hosting capability or a settled persistence policy.
+
+## Raw stream stage
+
+After the onion-client patch, `tor-js-onion-stream.patch` plus the
+`onion_stream.rs` overlay expose actual Arti `DataStream` bytes. Copy the overlay
+to `crates/tor-js-wasm/src/onion_stream.rs` in the isolated pinned checkout.
+This draft has not yet passed patch application, compilation or a network test.
+It is not enabled by the cmsg production adapter.
+
+`connectOnion(host, port, deadlineMs)` accepts only canonical checksum-valid
+onions. `read(maximum, deadlineMs)` returns at most 64 KiB and `write(bytes,
+deadlineMs)` accepts at most one cmsg-sized chunk. One read and one write can
+proceed concurrently; overlapping operations in the same direction fail.
+`close()` aborts both outstanding operations and drops their stream halves.
+The cmsg frame codec can then interoperate directly with native `FramedStream`.
+The embedding factory still needs a whole-bootstrap deadline and a dedicated
+client shutdown policy, since the TypeScript client waits for bootstrap before
+entering the Wasm connect deadline.
+
+The service stage must produce the same stream type from Arti's accepted
+onion-service streams. It additionally needs fresh ephemeral key/state ownership
+and full-lifetime introduction replay protection. No JavaScript callback or
+local echo is accepted as evidence that a browser onion service is reachable.

@@ -1,0 +1,32 @@
+diff --git a/crates/tor-js-wasm/Cargo.toml b/crates/tor-js-wasm/Cargo.toml
+--- a/crates/tor-js-wasm/Cargo.toml
++++ b/crates/tor-js-wasm/Cargo.toml
+@@ -27,1 +27,2 @@
+ tor-persist = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
++tor-hscrypto = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
+diff --git a/crates/tor-js-wasm/src/lib.rs b/crates/tor-js-wasm/src/lib.rs
+--- a/crates/tor-js-wasm/src/lib.rs
++++ b/crates/tor-js-wasm/src/lib.rs
+@@ -41,1 +41,3 @@
+ mod storage;
++mod onion_stream;
++pub use onion_stream::OnionStream;
+diff --git a/src/TorClient.ts b/src/TorClient.ts
+--- a/src/TorClient.ts
++++ b/src/TorClient.ts
+@@ -28,1 +28,15 @@
++  static async onionStreamSupported(): Promise<boolean> {
++    await ensureWasmInitialized();
++    return typeof WasmTorClient.onionStreamSupported === 'function'
++      && WasmTorClient.onionStreamSupported();
++  }
++
++  async connectOnion(host: string, port: number, deadlineMs: number) {
++    if (this.closed) throw new Error('tor-js:OnionTransport');
++    const client = await this.clientPromise;
++    await this.ready();
++    if (this.closed) throw new Error('tor-js:OnionTransport');
++    return client.connectOnion(host, port, deadlineMs);
++  }
++
+   constructor(options: TorClientOptions = {}) {

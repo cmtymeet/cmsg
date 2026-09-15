@@ -4,7 +4,7 @@ The browser package runs the same Rust MLS core and wire format as native cmsg.
 It accepts opaque binary messages and offers a text convenience method.
 
 ```js
-import { init, BrowserIdentity, BrowserMember } from '@corbet-labs/cmsg';
+import { init, BrowserIdentity, BrowserMember, BrowserInbox } from '@corbet-labs/cmsg';
 
 await init();
 const member = new BrowserMember();
@@ -13,6 +13,7 @@ const publicKey = member.chatPublicKey();
 const deviceAuthorization = identity.authorizeDevice(publicKey, issuedAt, expiresAt);
 // Obtain issuer eligibility for identity.memberId() and this device public key.
 member.bindDeviceAdmission(JSON.stringify(grant), JSON.stringify(trustedIssuer), deviceAuthorization);
+const inbox = new BrowserInbox(member); // Consumes the low-level member.
 ```
 
 `BrowserIdentity` owns the permanent community identity root and authorizes
@@ -22,6 +23,8 @@ ciphertext, bound to the expected community and member ID.
 
 `BrowserMember` exposes low-level group creation, invitations, joining, binary/text
 encryption, authenticated receive, participant removal and encrypted snapshots.
+Application conversations use `BrowserInbox` to enforce first-contact acceptance,
+stable-identity exclusions and asynchronous durable state transitions.
 `sendBytes(Uint8Array)` preserves arbitrary bytes, including invalid UTF-8;
 `sendText(string)` has the core text size limit. A received object exposes
 `kind`, `memberId`, `bytes`, and optional `text`. Display text literally.
@@ -36,6 +39,62 @@ and plaintext copies. Rust memory is accessible to code in the same JavaScript
 context. The host must supply secure code distribution, passkey wrapping
 material, and atomic durable storage for sealed state. Restoring old valid
 snapshots does not detect rollback or merge concurrent device state.
+
+## Durable browser sessions
+
+`BrowserInbox` owns both contact policy and the MLS session. Its mutating methods
+take a wrapping key, context bytes and an async persistence function:
+
+```js
+async function persist(checkpoint, outboundFrames) {
+  await storage.commitCheckpointAndOutbox(checkpoint, outboundFrames);
+  return true;
+}
+await inbox.createGroup(wrappingKey, context, persist);
+// After authenticating the unique peer, both endpoints register the same nonce
+// and bounds, with roles "initiator" and "recipient" respectively.
+await inbox.beginFirstContact(peerMemberId, introductionId, role,
+  responseDeadline, maxIntroductionBytes, wrappingKey, context, persist);
+const wire = await inbox.sendBytes(payload, wrappingKey, context, persist);
+```
+
+The storage function must atomically write the encrypted checkpoint and every
+outbound frame, and resolve `true` only after the write is durable. IndexedDB
+applications wait for transaction completion, not an individual request's
+success event. Storage is application supplied. cmsg never treats a synchronous
+return, a missing return, or a rejected Promise as successful persistence.
+Failed writes leave the published session unchanged. Store and retry exact
+outbound ciphertext; generating another send advances the ratchet again.
+
+`accept(welcome, recipientRedemption, key, context, persist, redeem)` returns
+`joined`, `rejected`, `pending`, `needsPermit`, `busy` or `blocked`. The recipient's
+trusted policy adapter prepares `recipientRedemption` using
+`invitationSender(welcome)`, which authenticates the invitation signer.
+The `redeem(opaqueBytes)` callback resolves `accepted`, `rejected` or `pending`.
+It runs only after pending intent is durably stored. Ambiguous results keep the
+same pending claim for recovery; a final write precedes publishing a joined
+session. The callback must use the configured anonymous policy-service route.
+
+The primary API requires a strict first-contact record for the unique
+authenticated peer. Omitting it fails closed. The application supplies an
+absolute response deadline and introduction byte limit; cmsg invents neither.
+The initiator can send one introduction until an authenticated answer arrives.
+The recipient can answer after receiving it or call `closeContact` to commit and
+send an encrypted permanent closure. The received `kind` is `contactClosed`.
+`sendBytes`, `sendText` and `receive` apply deadlines durably before further
+traffic; hosts also call `applyDeadlines` when updating idle session state.
+This policy currently supports pairs. Multi-member MLS remains a low-level
+`BrowserMember` capability until a group first-contact policy is defined.
+
+`closeForever`, `setBlocked`, `cancelPending` and `mergeContactSync` also await
+durability. A permanent closure cannot be undone by clearing a temporary block.
+`exportContactSync` returns private contact data: carry it only inside an
+encrypted channel authenticated to another root-authorized device of the same
+member. `renewDeviceAdmission` saves its new credential and outbound MLS commit
+together. `restore` restores the combined encrypted inbox and session.
+
+`signPresence`, `signDisconnect` and `authorizeAllocation` expose only typed
+board statements. There is no generic device-signing or private-key export API.
 
 ## Tor transport
 
@@ -55,7 +114,7 @@ const transport = await createTorJsOnionTransport({
   deadlineMs: 45000,
 });
 const replyWire = await transport.exchange(peerOnion, peerPort, encryptedWire);
-const reply = member.receive(replyWire);
+const reply = await inbox.receive(replyWire, wrappingKey, context, persist);
 ```
 
 This adapter performs one request/reply exchange against a peer-owned onion
@@ -96,3 +155,10 @@ before packing. The checked-in package excludes generated artifacts.
 `tests/browser.rs` runs in a real browser using `wasm-bindgen-test` and covers
 binary/text MLS round-trips, authentication failures, replay rejection,
 encrypted restore, and the portable route/framing bindings.
+
+The generated-JavaScript ABI contract is `browser/contract.mjs`. Serve the
+repository root after generating `browser/pkg`, then run in a real browser:
+`await import('/browser/contract.mjs').then(m => m.runBrowserContract())`.
+It returns `{ evidence, passed }` or throws on failure. It exercises real
+WebCrypto, Wasm and IndexedDB transactions, plus separately labeled scripted
+transport failure cases; it does not claim live Tor connectivity.

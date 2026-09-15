@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use zeroize::{Zeroize, Zeroizing};
 
+const CLOSE_PAYLOAD_PREFIX: &[u8] = b"cmsg.contact-close.v1\0";
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContactSync {
@@ -67,6 +69,33 @@ pub enum Redemption {
 pub struct Inbox {
     state: InboxState,
 }
+
+/// Explicit first-contact bounds selected by the embedding community. The
+/// deadline is an absolute timestamp from the same trusted Clock as Member.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstContactPolicy {
+    pub response_deadline: u64,
+    pub max_intro_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FirstContactRole {
+    Initiator,
+    Recipient,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictIntroduction {
+    role: FirstContactRole,
+    policy: FirstContactPolicy,
+    initial_writer_key: Vec<u8>,
+    sent: bool,
+    received: bool,
+    close_sent: bool,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InboxState {
@@ -88,6 +117,7 @@ struct Introduction {
     id: [u8; 32],
     decision: Option<ContactResolutionKind>,
     outbound_receipt: Option<Vec<u8>>,
+    strict: Option<StrictIntroduction>,
 }
 
 impl Drop for Introduction {
@@ -95,6 +125,9 @@ impl Drop for Introduction {
         self.id.zeroize();
         if let Some(bytes) = &mut self.outbound_receipt {
             bytes.zeroize();
+        }
+        if let Some(strict) = &mut self.strict {
+            strict.initial_writer_key.zeroize();
         }
     }
 }
@@ -391,7 +424,7 @@ impl Inbox {
         }
         let mut changed = self.duplicate();
         changed.state.introductions.insert(peer_id.to_owned(), Introduction {
-            id: *introduction_id, decision: None, outbound_receipt: None,
+            id: *introduction_id, decision: None, outbound_receipt: None, strict: None,
         });
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
@@ -401,6 +434,263 @@ impl Inbox {
     pub fn needs_resolution(&self, peer_id: &str) -> bool {
         !self.is_closed(peer_id) && self.state.introductions.get(peer_id)
             .is_some_and(|intro| intro.decision.is_none())
+    }
+
+    /// Register the strict first-contact protocol. Each endpoint supplies the
+    /// agreed nonce, its role and explicit bounds. Initial transmission belongs
+    /// to this device; siblings must sync before use and cannot independently
+    /// duplicate that transmission. Account-wide concurrent enrollment still
+    /// requires the embedding application's coordination.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_first_contact(
+        &mut self,
+        peer_id: &str,
+        introduction_id: &[u8; 32],
+        role: FirstContactRole,
+        policy: FirstContactPolicy,
+        member: &Member,
+        key: &[u8; 32],
+        context: &[u8],
+        mut persist: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.check_binding(member)?;
+        member.member_id()?;
+        if !self.state.root_authorized || !crate::admission::valid_member_id(peer_id)
+            || peer_id == self.state.recipient_id || self.is_blocked(peer_id)
+            || policy.response_deadline <= member.authorization_time()?
+            || policy.response_deadline > 9_007_199_254_740_991
+            || policy.max_intro_bytes == 0 || policy.max_intro_bytes > crate::MAX_DATA_BYTES
+        {
+            return Err(Error::Admission);
+        }
+        if let Some(existing) = self.state.introductions.get(peer_id) {
+            if existing.id != *introduction_id {
+                return Err(Error::InvalidState);
+            }
+            if let Some(strict) = &existing.strict {
+                return if strict.role == role && strict.policy == policy {
+                    Ok(())
+                } else { Err(Error::InvalidState) };
+            }
+            return Err(Error::InvalidState);
+        }
+        let mut changed = self.duplicate();
+        changed.state.introductions.insert(peer_id.to_owned(), Introduction {
+            id: *introduction_id, decision: None, outbound_receipt: None,
+            strict: Some(StrictIntroduction {
+                role, policy, initial_writer_key: member.chat_public_key(), sent: false, received: false, close_sent: false,
+            }),
+        });
+        persist(&changed.seal(member, key, context)?)?;
+        *self = changed;
+        Ok(())
+    }
+
+    /// Apply caller-configured response deadlines as permanent local closures.
+    /// This requires an awake client and a trusted Clock; no operator timer or
+    /// delivery promise is implied. Exact signed close receipts are retained
+    /// when the device is currently authorized, for later private delivery.
+    pub fn apply_deadlines(
+        &mut self,
+        member: &Member,
+        key: &[u8; 32],
+        context: &[u8],
+        mut persist: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<usize, Error> {
+        self.check_binding(member)?;
+        let now = member.authorization_time()?;
+        let expired: Vec<String> = self.state.introductions.iter().filter_map(|(peer, intro)| {
+            (intro.decision.is_none() && !self.is_closed(peer)
+                && intro.strict.as_ref().is_some_and(|s| s.policy.response_deadline <= now))
+                .then(|| peer.clone())
+        }).collect();
+        if expired.is_empty() { return Ok(0); }
+        let mut changed = self.duplicate();
+        for peer in &expired {
+            let intro = changed.state.introductions.get_mut(peer).ok_or(Error::InvalidState)?;
+            if let Ok(receipt) = member.sign_contact_resolution(peer, &intro.id, ContactResolutionKind::ClosedForever) {
+                intro.outbound_receipt = Some(serde_json::to_vec(&receipt).map_err(|_| Error::InvalidMessage)?);
+            }
+            if intro.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Recipient) {
+                intro.decision = Some(ContactResolutionKind::ClosedForever);
+            }
+            changed.state.closed.insert(peer.clone());
+        }
+        if changed.state.pending.as_ref().is_some_and(|p| changed.is_closed(&p.inviter)) {
+            changed.state.pending = None;
+        }
+        persist(&changed.seal(member, key, context)?)?;
+        *self = changed;
+        Ok(expired.len())
+    }
+
+    /// Send one introduction, an actual reply, or established conversation text.
+    /// The callback atomically persists checkpoint and exact outbound ciphertext.
+    pub fn send_contact(
+        &mut self, member: &mut Member, text: &[u8], key: &[u8; 32], context: &[u8],
+        persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
+        crate::validate_text(text)?;
+        self.send_contact_payload(member, text, true, key, context, persist)
+    }
+
+    pub fn send_contact_bytes(
+        &mut self, member: &mut Member, bytes: &[u8], key: &[u8; 32], context: &[u8],
+        persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
+        if bytes.is_empty() || bytes.len() > crate::MAX_DATA_BYTES || bytes.starts_with(CLOSE_PAYLOAD_PREFIX) {
+            return Err(Error::InvalidMessage);
+        }
+        self.send_contact_payload(member, bytes, false, key, context, persist)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn send_contact_payload(
+        &mut self, member: &mut Member, bytes: &[u8], text: bool,
+        key: &[u8; 32], context: &[u8], mut persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
+        self.apply_deadlines(member, key, context, |checkpoint| persist(checkpoint, &[]))?;
+        let peer = self.contact_peer(member)?;
+        self.check_exclusions(member)?;
+        let intro = self.state.introductions.get(&peer).ok_or(Error::InvalidState)?;
+        let strict = intro.strict.as_ref().ok_or(Error::InvalidState)?;
+        if intro.decision.is_none() && (bytes.len() > strict.policy.max_intro_bytes
+            || strict.initial_writer_key != member.chat_public_key()
+            || match strict.role {
+                FirstContactRole::Initiator => strict.sent,
+                FirstContactRole::Recipient => !strict.received || strict.sent,
+            }) {
+            return Err(Error::Admission);
+        }
+        let mut candidate = member.staged_copy(key, context)?;
+        let wire = if text { candidate.send(bytes)? } else { candidate.send_bytes(bytes)? };
+        let mut changed = self.duplicate();
+        let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
+        let state = entry.strict.as_mut().ok_or(Error::InvalidState)?;
+        state.sent = true;
+        if entry.decision.is_none() && state.role == FirstContactRole::Recipient {
+            entry.decision = Some(ContactResolutionKind::Answered);
+            let receipt = candidate.sign_contact_resolution(&peer, &entry.id, ContactResolutionKind::Answered)?;
+            entry.outbound_receipt = Some(serde_json::to_vec(&receipt).map_err(|_| Error::InvalidMessage)?);
+        }
+        persist(&changed.seal(&candidate, key, context)?, &wire)?;
+        *member = candidate;
+        *self = changed;
+        Ok(wire)
+    }
+
+    /// Receive at most one introduction until an actual reply is durably sent.
+    /// Authenticated replies establish the contact; signed close controls make
+    /// the pair permanently closed. Rejected input exposes no plaintext/history.
+    pub fn receive_contact(
+        &mut self, member: &mut Member, wire: &[u8], key: &[u8; 32], context: &[u8],
+        mut persist: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<Received, Error> {
+        self.apply_deadlines(member, key, context, &mut persist)?;
+        let peer = self.contact_peer(member)?;
+        let peer_excluded = self.is_blocked(&peer);
+        let intro = self.state.introductions.get(&peer).ok_or(Error::InvalidState)?;
+        intro.strict.as_ref().ok_or(Error::InvalidState)?;
+        let mut candidate = member.staged_copy(key, context)?;
+        let mut excluded = self.excluded();
+        // A terminal signed close receipt may still settle the original peer
+        // obligation after local cancellation. No application data is exposed.
+        excluded.remove(&peer);
+        let mut received = candidate.receive_excluding(wire, &excluded)?;
+        let mut peer_closed = false;
+        let mut changed = self.duplicate();
+        let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
+        let state = entry.strict.as_mut().ok_or(Error::InvalidState)?;
+        let payload = match &received {
+            Received::Text(message) => Some((&message.member_id, message.text.as_bytes())),
+            Received::Bytes(message) if message.bytes.starts_with(CLOSE_PAYLOAD_PREFIX) => {
+                let receipt: ContactResolution = serde_json::from_slice(&message.bytes[CLOSE_PAYLOAD_PREFIX.len()..])
+                    .map_err(|_| Error::InvalidMessage)?;
+                if receipt.responder_id != message.member_id || receipt.kind != ContactResolutionKind::ClosedForever {
+                    return Err(Error::Admission);
+                }
+                candidate.verify_contact_resolution(&receipt, &peer, &entry.id)?;
+                entry.decision = Some(ContactResolutionKind::ClosedForever);
+                entry.outbound_receipt = None;
+                changed.state.closed.insert(peer.clone());
+                peer_closed = true;
+                None
+            }
+            Received::Bytes(message) => Some((&message.member_id, message.bytes.as_slice())),
+            Received::MembershipChanged => {
+                if peer_excluded { return Err(Error::Admission); }
+                if self.contact_peer(&candidate)? != peer { return Err(Error::Admission); }
+                None
+            }
+            Received::ContactClosed => return Err(Error::InvalidMessage),
+        };
+        if let Some((sender, bytes)) = payload {
+            if peer_excluded || sender != &peer || bytes.is_empty() { return Err(Error::Admission); }
+            if entry.decision.is_none() {
+                if bytes.len() > state.policy.max_intro_bytes || match state.role {
+                    FirstContactRole::Recipient => state.received,
+                    FirstContactRole::Initiator => !state.sent,
+                } {
+                    return Err(Error::Admission);
+                }
+                state.received = true;
+                if state.role == FirstContactRole::Initiator {
+                    entry.decision = Some(ContactResolutionKind::Answered);
+                }
+            }
+        }
+        if peer_closed { received = Received::ContactClosed; }
+        persist(&changed.seal(&candidate, key, context)?)?;
+        *member = candidate;
+        *self = changed;
+        Ok(received)
+    }
+
+    /// Send an encrypted permanent-close decision after committing it locally.
+    /// This is the only guarded outbound control permitted for a closed peer.
+    pub fn close_contact(
+        &mut self, member: &mut Member, key: &[u8; 32], context: &[u8],
+        mut persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
+        let peer = self.contact_peer(member)?;
+        let intro = self.state.introductions.get(&peer).ok_or(Error::InvalidState)?;
+        let strict = intro.strict.as_ref().ok_or(Error::InvalidState)?;
+        if strict.close_sent { return Err(Error::Admission); }
+        let mut candidate = member.staged_copy(key, context)?;
+        let receipt = candidate.sign_contact_resolution(&peer, &intro.id, ContactResolutionKind::ClosedForever)?;
+        let encoded = serde_json::to_vec(&receipt).map_err(|_| Error::InvalidMessage)?;
+        let mut payload = Zeroizing::new(CLOSE_PAYLOAD_PREFIX.to_vec());
+        payload.extend_from_slice(&encoded);
+        let wire = candidate.send_bytes(&payload)?;
+        let mut changed = self.duplicate();
+        let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
+        let strict = entry.strict.as_mut().ok_or(Error::InvalidState)?;
+        strict.close_sent = true;
+        if strict.role == FirstContactRole::Recipient {
+            entry.decision = Some(ContactResolutionKind::ClosedForever);
+        }
+        entry.outbound_receipt = Some(encoded);
+        changed.state.closed.insert(peer.clone());
+        if changed.state.pending.as_ref().is_some_and(|p| p.inviter == peer) { changed.state.pending = None; }
+        persist(&changed.seal(&candidate, key, context)?, &wire)?;
+        *member = candidate;
+        *self = changed;
+        Ok(wire)
+    }
+
+    fn contact_peer(&self, member: &Member) -> Result<String, Error> {
+        self.check_binding(member)?;
+        let peers: BTreeSet<String> = member.participants()?.iter()
+            .filter(|p| p.member_id != self.state.recipient_id).map(|p| p.member_id.clone()).collect();
+        if peers.len() != 1 { return Err(Error::InvalidState); }
+        peers.into_iter().next().ok_or(Error::InvalidState)
+    }
+
+    /// A local sender cancellation or local timeout never counts as a peer
+    /// response and never earns a replacement introduction allowance.
+    pub fn awaiting_peer_resolution(&self, peer_id: &str) -> bool {
+        self.state.introductions.get(peer_id).is_some_and(|intro| intro.decision.is_none()
+            && intro.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator && s.sent))
     }
 
     /// Commit a local decision and its exact signed outbound receipt atomically.
@@ -419,6 +709,12 @@ impl Inbox {
     ) -> Result<Vec<u8>, Error> {
         self.check_binding(member)?;
         let existing = self.state.introductions.get(peer_id).ok_or(Error::InvalidState)?;
+        if existing.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator) {
+            return Err(Error::InvalidState);
+        }
+        if existing.strict.is_some() && kind == ContactResolutionKind::Answered && existing.decision.is_none() {
+            return Err(Error::InvalidState);
+        }
         if kind == ContactResolutionKind::Answered && self.is_closed(peer_id) {
             return Err(Error::Admission);
         }
@@ -461,6 +757,9 @@ impl Inbox {
         let peer_id = &receipt.responder_id;
         let existing = self.state.introductions.get(peer_id).ok_or(Error::InvalidState)?;
         member.verify_contact_resolution(receipt, peer_id, &existing.id)?;
+        if existing.strict.is_some() && receipt.kind == ContactResolutionKind::Answered && existing.decision.is_none() {
+            return Err(Error::InvalidState);
+        }
         if let Some(decision) = existing.decision {
             return if decision == receipt.kind { Ok(false) } else { Err(Error::InvalidState) };
         }
@@ -554,6 +853,21 @@ impl Inbox {
                 if existing.id != incoming.id {
                     return Err(Error::InvalidState);
                 }
+                let strict = match (&existing.strict, &incoming.strict) {
+                    (Some(local), Some(remote)) => {
+                        if local.role != remote.role || local.policy != remote.policy
+                            || local.initial_writer_key != remote.initial_writer_key {
+                            return Err(Error::InvalidState);
+                        }
+                        let mut merged = local.clone();
+                        merged.sent |= remote.sent;
+                        merged.received |= remote.received;
+                        merged.close_sent |= remote.close_sent;
+                        Some(merged)
+                    }
+                    (None, None) => None,
+                    _ => return Err(Error::InvalidState),
+                };
                 match (existing.decision, incoming.decision) {
                     (None, Some(_)) => *existing = incoming.clone(),
                     (Some(ContactResolutionKind::Answered), Some(ContactResolutionKind::ClosedForever)) => {
@@ -561,6 +875,7 @@ impl Inbox {
                     }
                     _ => (),
                 }
+                existing.strict = strict;
             } else {
                 changed.state.introductions.insert(peer.clone(), incoming.clone());
             }
@@ -590,9 +905,22 @@ impl Inbox {
         member.send_bytes(bytes)
     }
 
-    fn check_outbound(&self, member: &Member) -> Result<(), Error> {
+    fn check_exclusions(&self, member: &Member) -> Result<(), Error> {
         self.check_binding(member)?;
         if member.participants()?.iter().any(|p| self.is_blocked(&p.member_id)) {
+            return Err(Error::Admission);
+        }
+        Ok(())
+    }
+
+    fn check_outbound(&self, member: &Member) -> Result<(), Error> {
+        self.check_exclusions(member)?;
+        self.check_unresolved(member)
+    }
+
+    fn check_unresolved(&self, member: &Member) -> Result<(), Error> {
+        if member.participants()?.iter().any(|peer| self.state.introductions.get(&peer.member_id)
+            .is_some_and(|intro| intro.strict.is_some() && intro.decision.is_none())) {
             return Err(Error::Admission);
         }
         Ok(())
@@ -602,7 +930,7 @@ impl Inbox {
     /// or a locally staged membership update. Hosts stage such mutations in an
     /// isolated checkpoint, check here, then durably commit before transmitting.
     pub fn check_group(&self, member: &Member) -> Result<(), Error> {
-        self.check_outbound(member)
+        self.check_exclusions(member)
     }
 
     /// Reject excluded authenticated senders before publishing plaintext,
@@ -610,6 +938,7 @@ impl Inbox {
     /// silently reintroduce a closed identity under a different device key.
     pub fn receive(&self, member: &mut Member, wire: &[u8]) -> Result<Received, Error> {
         self.check_binding(member)?;
+        self.check_unresolved(member)?;
         member.receive_excluding(wire, &self.excluded())
     }
 
@@ -638,17 +967,28 @@ impl Inbox {
         for (peer, introduction) in &self.state.introductions {
             if !crate::admission::valid_member_id(peer) || peer == &self.state.recipient_id
                 || (introduction.decision == Some(ContactResolutionKind::ClosedForever) && !self.is_closed(peer))
-                || (introduction.decision.is_none() && introduction.outbound_receipt.is_some())
             {
                 return Err(Error::InvalidStore);
+            }
+            if let Some(strict) = &introduction.strict {
+                if !self.state.root_authorized || strict.initial_writer_key.len() != 32
+                    || strict.policy.response_deadline == 0 || strict.policy.response_deadline > 9_007_199_254_740_991
+                    || strict.policy.max_intro_bytes == 0 || strict.policy.max_intro_bytes > crate::MAX_DATA_BYTES
+                    || (introduction.decision == Some(ContactResolutionKind::Answered) && (!strict.sent || !strict.received))
+                {
+                    return Err(Error::InvalidStore);
+                }
             }
             if let Some(bytes) = &introduction.outbound_receipt {
                 if bytes.len() > 16 * 1024 {
                     return Err(Error::InvalidStore);
                 }
                 let receipt: ContactResolution = serde_json::from_slice(bytes).map_err(|_| Error::InvalidStore)?;
+                let sender_cancellation = introduction.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator)
+                    && self.is_closed(peer) && receipt.kind == ContactResolutionKind::ClosedForever;
                 if receipt.responder_id != self.state.recipient_id || &receipt.peer_id != peer
-                    || receipt.introduction_id != introduction.id || Some(receipt.kind) != introduction.decision
+                    || receipt.introduction_id != introduction.id
+                    || (Some(receipt.kind) != introduction.decision && !sender_cancellation)
                     || receipt.community_id != self.state.community_id
                     || receipt.issued_at == 0 || receipt.issued_at > member.authorization_time()?
                 {

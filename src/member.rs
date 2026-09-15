@@ -58,6 +58,9 @@ pub enum Received {
     Text(TextMessage),
     Bytes(DataMessage),
     MembershipChanged,
+    /// Emitted by the guarded Inbox first-contact protocol after verifying and
+    /// durably applying a peer's encrypted permanent-close receipt.
+    ContactClosed,
 }
 impl fmt::Debug for Received {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -65,6 +68,7 @@ impl fmt::Debug for Received {
             Self::Text(_) => f.write_str("Text([redacted])"),
             Self::Bytes(_) => f.write_str("Bytes([redacted])"),
             Self::MembershipChanged => f.write_str("MembershipChanged"),
+            Self::ContactClosed => f.write_str("ContactClosed"),
         }
     }
 }
@@ -537,7 +541,7 @@ impl Member {
     pub fn receive_control(&mut self, wire: &[u8]) -> Result<(), Error> {
         match self.process_incoming(wire, true, &BTreeSet::new())? {
             Received::MembershipChanged => Ok(()),
-            Received::Text(_) | Received::Bytes(_) => Err(Error::InvalidMessage),
+            Received::Text(_) | Received::Bytes(_) | Received::ContactClosed => Err(Error::InvalidMessage),
         }
     }
 
@@ -835,6 +839,10 @@ impl Member {
         let plaintext =
             Zeroizing::new(serde_json::to_vec(&snapshot).map_err(|_| Error::InvalidStore)?);
         crate::vault::seal(&plaintext, wrapping_key, context)
+    }
+
+    pub(crate) fn staged_copy(&self, key: &[u8; 32], context: &[u8]) -> Result<Self, Error> {
+        Self::restore_with_clock(&self.snapshot(key, context)?, key, context, self.clock.clone())
     }
 
     /// Restores the exact saved ratchet state. Authenticating an old valid snapshot

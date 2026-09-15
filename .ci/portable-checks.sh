@@ -12,12 +12,47 @@ for tool in wasm-bindgen wasm-bindgen-test-runner chromium chromium-browser goog
 done
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA"
 mkdir -p "$artifact_dir"
+case "${CHECK_SUITE:-core}" in
+  core|browser|composition) ;;
+  *) printf 'Unknown check suite\n'; exit 2 ;;
+esac
 if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
   cargo update --workspace
   date -u +%FT%TZ > "$artifact_dir/dependency-resolution-time.txt"
 fi
 cp Cargo.lock "$artifact_dir/Cargo.lock"
 result=0
+if test "${CHECK_SUITE:-core}" = browser; then
+  test -x "$BROWSER_BIN"
+  if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
+    cargo update --manifest-path .ci/browser-bindgen/Cargo.toml --workspace
+  fi
+  cp .ci/browser-bindgen/Cargo.lock "$artifact_dir/browser-helper-Cargo.lock"
+  timeout 1200 cargo build --locked --target wasm32-unknown-unknown --lib
+  timeout 1200 cargo run --locked --manifest-path .ci/browser-bindgen/Cargo.toml -- \
+    "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg
+  export BROWSER_BIN BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
+  timeout 300 node .ci/browser-check.mjs
+  tar --create --file "$artifact_dir/browser-package.tar" browser/pkg browser/index.mjs browser/package.json
+  (cd "$artifact_dir" && sha256sum Cargo.lock browser-helper-Cargo.lock browser-package.tar browser-evidence.json > SHA256SUMS)
+  exit 0
+fi
+if test "${CHECK_SUITE:-core}" = composition; then
+  test -d "$OPENSSL_INCLUDE_DIR/openssl"
+  test -d "$OPENSSL_LIB_DIR"
+  export OPENSSL_INCLUDE_DIR OPENSSL_LIB_DIR
+  export LD_LIBRARY_PATH="$OPENSSL_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  manifest=experiments/community-composition/Cargo.toml
+  if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
+    cargo update --manifest-path "$manifest" --workspace
+  fi
+  cp experiments/community-composition/Cargo.lock "$artifact_dir/composition-Cargo.lock"
+  timeout 1200 cargo test --locked --manifest-path "$manifest" -- --test-threads=2 || result=$?
+  cargo fmt --manifest-path "$manifest"
+  tar --create --file "$artifact_dir/composition-source.tar" experiments/community-composition/src experiments/community-composition/tests
+  (cd "$artifact_dir" && sha256sum Cargo.lock composition-Cargo.lock composition-source.tar > SHA256SUMS)
+  exit "$result"
+fi
 timeout 1200 cargo test --locked --all-targets -- --test-threads=2 || result=$?
 wasm_libdir="$(rustc --print target-libdir --target wasm32-unknown-unknown)"
 if test -d "$wasm_libdir"; then

@@ -4,7 +4,12 @@
     "revision": "65bb21d536a405ba706689ca384fad2ee25e60a7",
     "baseVersion": "0.4.1",
     "registryIntegrity": "sha512-cUF55sKfPt4ORFaB7sT+8dPLPZqHHnit7H5NKwq05nF9e2SY8O2CyoTbZ6bYbhCfUFV7ejHmYD/o26WuptETBw==",
-    "patches": ["tor-js-onion-client.patch"]
+    "patches": ["tor-js-onion-client.patch"],
+    "rawStreamStage": {
+      "patch": "tor-js-onion-stream.patch",
+      "overlay": { "onion_stream.rs": "crates/tor-js-wasm/src/onion_stream.rs" },
+      "status": "source draft; apply/build/browser/native Tor round-trip unverified"
+    }
   },
   "arti": {
     "repository": "https://github.com/voltrevo/arti.git",

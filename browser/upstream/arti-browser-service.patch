@@ -1,0 +1,138 @@
+diff --git a/crates/tor-persist/src/lib.rs b/crates/tor-persist/src/lib.rs
+--- a/crates/tor-persist/src/lib.rs
++++ b/crates/tor-persist/src/lib.rs
+@@ -65,2 +65,7 @@
+ #[cfg(feature = "state-dir")]
++#[cfg_attr(target_arch = "wasm32", path = "state_dir_wasm.rs")]
+ pub mod state_dir;
++
++#[cfg(all(test, feature = "state-dir", not(target_arch = "wasm32")))]
++#[path = "state_dir_wasm.rs"]
++mod state_dir_wasm_tests;
+diff --git a/crates/arti-client/src/client.rs b/crates/arti-client/src/client.rs
+--- a/crates/arti-client/src/client.rs
++++ b/crates/arti-client/src/client.rs
+@@ -582,3 +582,8 @@
+-        let (state_dir, mistrust) = config.state_dir()?;
+-        let state_dir =
+-            self::StateDirectory::new(state_dir, mistrust).map_err(ErrorDetail::StateAccess)?;
++        #[cfg(not(target_arch = "wasm32"))]
++        let state_dir = {
++            let (state_dir, mistrust) = config.state_dir()?;
++            self::StateDirectory::new(state_dir, mistrust).map_err(ErrorDetail::StateAccess)?
++        };
++        #[cfg(target_arch = "wasm32")]
++        let state_dir = self::StateDirectory::new_ephemeral();
++
+@@ -1008,3 +1013,5 @@
+-        #[cfg(feature = "onion-service-service")]
++        #[cfg(all(feature = "onion-service-service", not(target_arch = "wasm32")))]
+         let state_directory =
+             StateDirectory::new(&state_dir, mistrust).map_err(ErrorDetail::StateAccess)?;
++        #[cfg(all(feature = "onion-service-service", target_arch = "wasm32"))]
++        let state_directory = StateDirectory::new_ephemeral();
+diff --git a/crates/tor-hsservice/src/internal_prelude.rs b/crates/tor-hsservice/src/internal_prelude.rs
+--- a/crates/tor-hsservice/src/internal_prelude.rs
++++ b/crates/tor-hsservice/src/internal_prelude.rs
+@@ -103,3 +103,1 @@
+-    tor_persist::state_dir::{
+-        ContainsInstanceStateGuard as _, InstanceRawSubdir, LockFileGuard, StateDirectory,
+-    },
++    tor_persist::state_dir::StateDirectory,
+@@ -113,1 +111,6 @@
+ //---------- names from this crate ----------
++
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) use tor_persist::state_dir::{
++    ContainsInstanceStateGuard as _, InstanceRawSubdir, LockFileGuard,
++};
+diff --git a/crates/tor-hsservice/src/lib.rs b/crates/tor-hsservice/src/lib.rs
+--- a/crates/tor-hsservice/src/lib.rs
++++ b/crates/tor-hsservice/src/lib.rs
+@@ -113,1 +113,4 @@
+ pub use req::{RendRequest, StreamRequest};
++
++#[cfg(all(target_arch = "wasm32", feature = "hs-pow-full"))]
++compile_error!("browser ephemeral service requires a port of the PoW replay store before hs-pow-full can be enabled");
+@@ -326,3 +329,6 @@
++        #[cfg(not(target_arch = "wasm32"))]
+         let pow_nonce_dir = state_handle
+             .raw_subdir("pow_nonces")
+             .map_err(StartupError::StateDirectoryInaccessible)?;
++        #[cfg(target_arch = "wasm32")]
++        let pow_nonce_dir = ();
+diff --git a/crates/tor-hsservice/src/pow/v1_stub.rs b/crates/tor-hsservice/src/pow/v1_stub.rs
+--- a/crates/tor-hsservice/src/pow/v1_stub.rs
++++ b/crates/tor-hsservice/src/pow/v1_stub.rs
+@@ -13,1 +13,1 @@
+-    state_dir::{InstanceRawSubdir, StorageHandle},
++    state_dir::StorageHandle,
+@@ -15,1 +15,6 @@
+ use tor_rtcompat::Runtime;
++
++#[cfg(not(target_arch = "wasm32"))]
++use tor_persist::state_dir::InstanceRawSubdir;
++#[cfg(target_arch = "wasm32")]
++type InstanceRawSubdir = ();
+diff --git a/crates/tor-hsservice/src/ipt_mgr.rs b/crates/tor-hsservice/src/ipt_mgr.rs
+--- a/crates/tor-hsservice/src/ipt_mgr.rs
++++ b/crates/tor-hsservice/src/ipt_mgr.rs
+@@ -74,1 +74,2 @@
++    #[cfg(not(target_arch = "wasm32"))]
+     replay_log_dir: tor_persist::state_dir::InstanceRawSubdir,
+@@ -393,1 +394,10 @@
+         let mut rng = tor_llcrypto::rng::CautiousRng;
++
++        // Browser runtime state and keys are never independently restored.
++        // A reconstructed introduction must not receive a new empty replay log.
++        #[cfg(target_arch = "wasm32")]
++        if expect_existing_keys.is_some() {
++            return Err(CreateIptError::Fatal(
++                internal!("ephemeral browser introduction cannot restore prior keys").into(),
++            ));
++        }
+@@ -463,1 +472,4 @@
++        #[cfg(not(target_arch = "wasm32"))]
+         let replay_log = IptReplayLog::new_logged(&imm.replay_log_dir, &lid)?;
++        #[cfg(target_arch = "wasm32")]
++        let replay_log = IptReplayLog::new_ephemeral();
+@@ -627,1 +639,2 @@
++        #[cfg(not(target_arch = "wasm32"))]
+         let replay_log_dir = state_handle
+@@ -639,1 +652,2 @@
++            #[cfg(not(target_arch = "wasm32"))]
+             replay_log_dir,
+@@ -1361,1 +1375,3 @@
+         // IPT replay logs
++        #[cfg(not(target_arch = "wasm32"))]
++        {
+@@ -1398,1 +1414,2 @@
+             fs::remove_file(&path).map_err(handle_rl_err("remove", &path))?;
++        }
+diff --git a/crates/tor-hsservice/src/replay.rs b/crates/tor-hsservice/src/replay.rs
+--- a/crates/tor-hsservice/src/replay.rs
++++ b/crates/tor-hsservice/src/replay.rs
+@@ -38,1 +38,2 @@
++    #[cfg(not(target_arch = "wasm32"))]
+     file: Option<PersistFile>,
+@@ -95,1 +96,2 @@
++#[cfg(not(target_arch = "wasm32"))]
+ pub(crate) struct PersistFile {
+@@ -123,1 +125,2 @@
++            #[cfg(not(target_arch = "wasm32"))]
+             file: None,
+@@ -141,1 +144,2 @@
++    #[cfg(not(target_arch = "wasm32"))]
+     pub(crate) fn new_logged(
+@@ -156,1 +160,2 @@
++    #[cfg(not(target_arch = "wasm32"))]
+     fn new_logged_inner(path: impl AsRef<Path>, lock: Arc<LockFileGuard>) -> io::Result<Self> {
+@@ -221,1 +226,2 @@
++    #[cfg(not(target_arch = "wasm32"))]
+     fn truncate_to_multiple(file: &mut File, current_len: u64) -> io::Result<()> {
+@@ -239,1 +245,2 @@
++        #[cfg(not(target_arch = "wasm32"))]
+         if let Some(f) = self.file.as_mut() {
+@@ -283,1 +290,2 @@
++        #[cfg(not(target_arch = "wasm32"))]
+         if let Some(f) = self.file.as_mut() {

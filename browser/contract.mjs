@@ -1,7 +1,7 @@
 // Browser-only behavioral checks against the generated Wasm JavaScript API.
 // Scripted transport cases exercise adapter failure boundaries, not Tor.
 import {
-  init, BrowserFrameCodec, BrowserIdentity, BrowserMember, BrowserOnionEndpoint,
+  init, BrowserFrameCodec, BrowserIdentity, BrowserMember, BrowserInbox, BrowserOnionEndpoint,
 } from './index.mjs';
 import { OnionHttpTransport } from './internal/http.mjs';
 
@@ -89,6 +89,30 @@ function response(bytes) {
   });
 }
 
+async function checkpointStore() {
+  const name = `cmsg-contract-${crypto.randomUUID()}`;
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('sessions');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error('fixture database open'));
+  });
+  return {
+    persist: (id) => (checkpoint, outbound) => new Promise((resolve, reject) => {
+      const transaction = db.transaction('sessions', 'readwrite', { durability: 'strict' });
+      transaction.objectStore('sessions').put({ checkpoint, outbound }, id);
+      transaction.oncomplete = () => resolve(true);
+      transaction.onabort = transaction.onerror = () => reject(new Error('fixture database write'));
+    }),
+    read: (id) => new Promise((resolve, reject) => {
+      const request = db.transaction('sessions').objectStore('sessions').get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(new Error('fixture database read'));
+    }),
+    close: () => { db.close(); indexedDB.deleteDatabase(name); },
+  };
+}
+
 export async function runBrowserContract() {
   await init();
   const passed = [];
@@ -146,6 +170,87 @@ export async function runBrowserContract() {
   ), 'issuer alone cannot replace a device');
   forged.free();
   passed.push('generated JS API: issuer-only device substitution rejected');
+
+  const sender = await member(issuer);
+  const recipient = await member(issuer);
+  const senderId = sender.identity.memberId();
+  const recipientId = recipient.identity.memberId();
+  const senderInbox = new BrowserInbox(sender.member);
+  const recipientInbox = new BrowserInbox(recipient.member);
+  const store = await checkpointStore();
+  const sessionKey = crypto.getRandomValues(new Uint8Array(32));
+  const sessionContext = encode('guarded-browser-session');
+  const saveSender = store.persist('sender');
+  const saveRecipient = store.persist('recipient');
+  await senderInbox.createGroup(sessionKey, sessionContext, saveSender);
+  const recipientPackage = await recipientInbox.keyPackage(sessionKey, sessionContext, saveRecipient);
+  const guardedInvitation = await senderInbox.add(recipientPackage, sessionKey, sessionContext, saveSender);
+  const welcome = guardedInvitation.welcome;
+  guardedInvitation.free();
+  assert(recipientInbox.invitationSender(welcome) === senderId, 'authenticated invitation sender');
+  let redemptions = 0;
+  const redeem = async (opaque) => {
+    redemptions += 1;
+    assert(sameBytes(opaque, [7, 2, 9]), 'recipient opaque claim');
+    const pending = await store.read('recipient');
+    const saved = BrowserInbox.restore(pending.checkpoint, sessionKey, sessionContext);
+    assert(sameBytes(saved.pendingWelcome(), welcome), 'pending durable before external redemption');
+    saved.free();
+    return 'accepted';
+  };
+  assert(await recipientInbox.accept(welcome, undefined, sessionKey, sessionContext, saveRecipient, redeem) === 'needsPermit', 'unknown contact requires permit');
+  assert(redemptions === 0, 'no premature redemption');
+  await rejects(() => recipientInbox.accept(welcome, new Uint8Array([7, 2, 9]), sessionKey, sessionContext,
+    async () => { throw new Error('synthetic write failure'); }, redeem), 'failed pending checkpoint');
+  assert(redemptions === 0 && recipientInbox.pendingWelcome() === undefined, 'failed persistence cannot spend or publish');
+  assert(await recipientInbox.accept(welcome, new Uint8Array([7, 2, 9]), sessionKey, sessionContext, saveRecipient, redeem) === 'joined', 'guarded acceptance');
+  assert(redemptions === 1 && recipientInbox.isKnown(senderId), 'exactly one redeemed initial acceptance');
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'first-contact policy is mandatory');
+  const introductionId = crypto.getRandomValues(new Uint8Array(32));
+  const responseDeadline = Math.floor(Date.now() / 1000) + 300;
+  await senderInbox.beginFirstContact(recipientId, introductionId, 'initiator', responseDeadline, 64,
+    sessionKey, sessionContext, saveSender);
+  await recipientInbox.beginFirstContact(senderId, introductionId, 'recipient', responseDeadline, 64,
+    sessionKey, sessionContext, saveRecipient);
+  await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'recipient cannot reply before intro');
+  await rejects(() => senderInbox.sendBytes(new Uint8Array(65), sessionKey, sessionContext, saveSender), 'caller intro byte bound');
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, async () => undefined), 'missing durable acknowledgement');
+  const guardedWire = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
+  assert(sameBytes((await store.read('sender')).outbound[0], guardedWire), 'outbox committed with checkpoint');
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'one introduction until authentic reply');
+  await rejects(() => recipientInbox.receive(guardedWire, sessionKey, sessionContext,
+    async () => { throw new Error('synthetic receive write failure'); }), 'receive requires persistence before plaintext');
+  const guardedReceived = await recipientInbox.receive(guardedWire, sessionKey, sessionContext, saveRecipient);
+  assert(sameBytes(guardedReceived.bytes, binary), 'failed receive write preserves retry');
+  guardedReceived.free();
+  const answer = await recipientInbox.sendText('answer', sessionKey, sessionContext, saveRecipient);
+  const answerReceived = await senderInbox.receive(answer, sessionKey, sessionContext, saveSender);
+  assert(answerReceived.text === 'answer' && !senderInbox.needsResolution(recipientId), 'authenticated answer resolves intro');
+  answerReceived.free();
+  await rejects(() => recipientInbox.closeForever(senderId, sessionKey, sessionContext,
+    async () => false), 'closure requires acknowledgement');
+  assert(!recipientInbox.isClosed(senderId), 'failed closure write preserves policy');
+  await recipientInbox.closeForever(senderId, sessionKey, sessionContext, saveRecipient);
+  await recipientInbox.setBlocked(senderId, false, sessionKey, sessionContext, saveRecipient);
+  assert(recipientInbox.isClosed(senderId), 'closure is permanent');
+  await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'closed contact cannot send');
+  const closeWire = await recipientInbox.closeContact(sessionKey, sessionContext, saveRecipient);
+  const closeReceived = await senderInbox.receive(closeWire, sessionKey, sessionContext, saveSender);
+  assert(closeReceived.kind === 'contactClosed' && senderInbox.isClosed(recipientId), 'authenticated encrypted closure reaches peer');
+  closeReceived.free();
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'peer closure stops further messages');
+  const restoredInbox = BrowserInbox.restore((await store.read('recipient')).checkpoint, sessionKey, sessionContext);
+  assert(restoredInbox.isClosed(senderId) && restoredInbox.memberId() === recipientId, 'closed policy survives IndexedDB restore');
+  restoredInbox.free();
+  const leaseEndpoint = new BrowserOnionEndpoint(ONION, 80);
+  const lease = JSON.parse(senderInbox.signPresence(leaseEndpoint, 1, Math.floor(Date.now() / 1000) + 60));
+  assert(lease.memberId === senderId && lease.endpoint.host === ONION, 'typed presence binds owner and onion');
+  leaseEndpoint.free();
+  const disconnect = JSON.parse(senderInbox.signDisconnect(2, Math.floor(Date.now() / 1000) + 60));
+  assert(disconnect.endpoint === null && disconnect.sequence === 2, 'typed disconnect');
+  senderInbox.free(); recipientInbox.free(); sender.identity.free(); recipient.identity.free();
+  sessionKey.fill(0); store.close();
+  passed.push('generated JS API + IndexedDB: mandatory bounded intro, authentic reply/closure, durable checkpoint/outbox and receive retry');
 
   for (const port of [0, -1, 65536, 65537, 1.5, NaN, Infinity]) {
     throws(() => new BrowserOnionEndpoint(ONION, port), 'port bounds before JS integer coercion');
@@ -210,6 +315,16 @@ export async function runBrowserContract() {
   await rejects(() => stalled.exchange(ONION, 80, new Uint8Array([1])), 'whole exchange timeout');
   assert(timedOut, 'timeout closes Tor client');
   passed.push('scripted adapter boundary: readiness is inside whole-exchange deadline');
+
+  const throwingClose = new OnionHttpTransport({
+    ready: async () => {}, fetch: async () => { throw new Error('secret destination'); },
+    close: () => { throw new Error('secret close details'); },
+  }, 1000);
+  let sanitized;
+  try { await throwingClose.exchange(ONION, 80, new Uint8Array([1])); } catch (error) { sanitized = error.message; }
+  assert(sanitized === 'cmsg:Transport', 'upstream close errors scrubbed');
+  throwingClose.close();
+  passed.push('scripted adapter boundary: transport and shutdown errors cannot disclose upstream details');
 
   bob.member.free();
   alice.identity.free();

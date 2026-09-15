@@ -16,6 +16,7 @@
     "tor-js.mjs",
     "tor-js.d.ts",
     "internal/http.mjs",
+    "upstream/**",
     "pkg/cmsg.js",
     "pkg/cmsg.d.ts",
     "pkg/cmsg_bg.wasm",
