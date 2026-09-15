@@ -1,9 +1,10 @@
 diff --git a/crates/tor-js-wasm/Cargo.toml b/crates/tor-js-wasm/Cargo.toml
 --- a/crates/tor-js-wasm/Cargo.toml
 +++ b/crates/tor-js-wasm/Cargo.toml
-@@ -27,1 +27,2 @@
+@@ -27,1 +27,3 @@
  tor-persist = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
 +tor-hscrypto = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
++safelog = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
 diff --git a/crates/tor-js-wasm/src/lib.rs b/crates/tor-js-wasm/src/lib.rs
 --- a/crates/tor-js-wasm/src/lib.rs
 +++ b/crates/tor-js-wasm/src/lib.rs

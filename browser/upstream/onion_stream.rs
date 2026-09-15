@@ -4,6 +4,7 @@ use crate::TorClient;
 use arti_client::{DataReader, DataStream, DataWriter};
 use futures::{future::{select, AbortHandle, Abortable, Either}, io::{AsyncReadExt, AsyncWriteExt}, FutureExt};
 use gloo_timers::future::TimeoutFuture;
+use safelog::DisplayRedacted as _;
 use std::{cell::{Cell, RefCell}, rc::{Rc, Weak}, sync::Arc};
 use tor_hscrypto::pk::HsId;
 use wasm_bindgen::prelude::*;
@@ -168,7 +169,7 @@ impl TorClient {
         wasm_bindgen_futures::future_to_promise(async move {
             let (port, deadline) = parameters?;
             let onion: HsId = host.parse().map_err(|_| failure())?;
-            if onion.to_string() != host { return Err(failure()); }
+            if onion.display_unredacted().to_string() != host { return Err(failure()); }
             let client = client.ok_or_else(failure)?;
             if registry.closed.get() || registry.pending.borrow().is_some() { return Err(failure()); }
             let (abort, registration) = AbortHandle::new_pair();

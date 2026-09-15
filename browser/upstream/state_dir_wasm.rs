@@ -79,7 +79,7 @@ impl InstanceStateHandle {
 pub struct StorageHandle<T> {
     state: Arc<Mutex<InstanceState>>,
     key: String,
-    marker: PhantomData<fn() -> T>,
+    marker: PhantomData<fn(T) -> T>,
 }
 
 impl<T> fmt::Debug for StorageHandle<T> {

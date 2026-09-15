@@ -799,8 +799,12 @@ impl Inbox {
         }
         let first_resolution = existing.decision.is_none();
         if let Some(decision) = existing.decision {
-            if decision == receipt.kind && existing.inbound_receipt.is_some() {
-                return Ok(false);
+            if decision == receipt.kind {
+                if let Some(stored) = &existing.inbound_receipt {
+                    let previous: ContactResolution = serde_json::from_slice(stored)
+                        .map_err(|_| Error::InvalidStore)?;
+                    if receipt.issued_at <= previous.issued_at { return Ok(false); }
+                }
             }
             if decision != receipt.kind && receipt.kind != ContactResolutionKind::ClosedForever {
                 return Err(Error::InvalidState);

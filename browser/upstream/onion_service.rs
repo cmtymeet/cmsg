@@ -3,6 +3,7 @@
 use crate::{onion_stream::{OnionStreamRegistry, StreamState}, TorClient};
 use futures::{future::{select, AbortHandle, Abortable, Either}, Stream, StreamExt, FutureExt};
 use gloo_timers::future::TimeoutFuture;
+use safelog::DisplayRedacted as _;
 use std::{cell::{Cell, RefCell}, pin::Pin, rc::{Rc, Weak}, sync::Arc};
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
 use tor_hsservice::{HsNickname, OnionServiceConfig, RunningOnionService, StreamRequest};
@@ -123,7 +124,7 @@ impl TorClient {
                 .build().map_err(|_| failure())?;
             let (service, rendezvous) = client.launch_onion_service(config)
                 .map_err(|_| failure())?.ok_or_else(failure)?;
-            let host = service.onion_address().ok_or_else(failure)?.to_string();
+            let host = service.onion_address().ok_or_else(failure)?.display_unredacted().to_string();
             // Unlike upstream's convenience helper, keep the number of pending
             // rendezvous handshakes finite. Arti still validates every request.
             let requests = rendezvous.flat_map_unordered(Some(maximum_streams), |request| {
