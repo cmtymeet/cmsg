@@ -6,13 +6,66 @@
 use crate::{verify_admission, AdmissionGrant, Error, Member};
 use data_encoding::BASE64URL_NOPAD as B64;
 use ed25519_dalek::{Signature, VerifyingKey};
-use openmls::prelude::BasicCredential;
 use openmls_traits::signatures::Signer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_AUTHORIZATION_SECONDS: u64 = 300;
+
+/// A peer's authenticated decision. An answer claim is not proof that a human
+/// read a message, and this receipt alone never authorizes an operator credit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContactResolutionKind {
+    Answered,
+    ClosedForever,
+}
+
+/// Private first-contact receipt. All fields identify a contact pair: keep it on
+/// the endpoints and feed only an independently verified private proof to a
+/// policy service. The same introduction ID must be persisted by both endpoints.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContactResolution {
+    pub community_id: String,
+    pub responder_id: String,
+    pub peer_id: String,
+    pub introduction_id: [u8; 32],
+    pub kind: ContactResolutionKind,
+    pub issued_at: u64,
+    pub device_public_key: Vec<u8>,
+    pub identity_credential: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+impl std::fmt::Debug for ContactResolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ContactResolution([redacted])")
+    }
+}
+
+impl Drop for ContactResolution {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.community_id.zeroize();
+        self.responder_id.zeroize();
+        self.peer_id.zeroize();
+        self.introduction_id.zeroize();
+        self.identity_credential.zeroize();
+    }
+}
+
+impl ContactResolution {
+    fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
+        serde_json::to_vec(&serde_json::json!([
+            "cmsg.contact-resolution.v1", self.community_id,
+            self.responder_id, self.peer_id, B64.encode(&self.introduction_id),
+            self.kind, self.issued_at, B64.encode(&self.device_public_key),
+            B64.encode(&Sha256::digest(&self.identity_credential)),
+        ])).map_err(|_| Error::InvalidMessage)
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,6 +145,68 @@ pub struct ReleasePreflight {
 }
 
 impl Member {
+    /// Sign a private answer/close declaration using this root-authorized device.
+    /// Hosts must durably save the decision and its outbound receipt together
+    /// before transmission. Signing alone does not apply a local closure.
+    pub fn sign_contact_resolution(
+        &self,
+        peer_id: &str,
+        introduction_id: &[u8; 32],
+        kind: ContactResolutionKind,
+    ) -> Result<ContactResolution, Error> {
+        let responder_id = self.member_id()?;
+        if self.device_authorization()?.is_none()
+            || !crate::admission::valid_member_id(peer_id)
+            || peer_id == responder_id
+        {
+            return Err(Error::Admission);
+        }
+        let mut resolution = ContactResolution {
+            community_id: self.trust.as_ref().ok_or(Error::Admission)?.community_id.clone(),
+            responder_id,
+            peer_id: peer_id.to_owned(),
+            introduction_id: *introduction_id,
+            kind,
+            issued_at: self.authorization_time()?,
+            device_public_key: self.chat_public_key(),
+            identity_credential: self.private_identity_credential()?,
+            signature: Vec::new(),
+        };
+        resolution.signature = self.signer.sign(&zeroize::Zeroizing::new(resolution.signing_bytes()?))
+            .map_err(|_| Error::Admission)?;
+        Ok(resolution)
+    }
+
+    /// Authenticate a peer's decision for the exact locally pending introduction.
+    /// The caller retains replay/settlement state; this verifier issues no credit.
+    pub fn verify_contact_resolution(
+        &self,
+        resolution: &ContactResolution,
+        expected_peer: &str,
+        introduction_id: &[u8; 32],
+    ) -> Result<(), Error> {
+        let own_id = self.member_id()?;
+        let now = self.authorization_time()?;
+        if self.device_authorization()?.is_none()
+            || resolution.community_id != self.trust.as_ref().ok_or(Error::Admission)?.community_id
+            || resolution.peer_id != own_id
+            || resolution.responder_id != expected_peer
+            || resolution.peer_id == resolution.responder_id
+            || resolution.introduction_id != *introduction_id
+            || resolution.issued_at == 0 || resolution.issued_at > now
+            || resolution.identity_credential.len() > 8192
+            || self.verify_private_identity_credential(&resolution.identity_credential,
+                &resolution.device_public_key, now)? != resolution.responder_id
+        {
+            return Err(Error::Admission);
+        }
+        let key: [u8; 32] = resolution.device_public_key.as_slice().try_into().map_err(|_| Error::Admission)?;
+        VerifyingKey::from_bytes(&key).map_err(|_| Error::Admission)?.verify_strict(
+            &zeroize::Zeroizing::new(resolution.signing_bytes()?),
+            &Signature::from_slice(&resolution.signature).map_err(|_| Error::Admission)?,
+        ).map_err(|_| Error::Admission)
+    }
+
     /// Authorize only our current certified account, hashing the actual blinded
     /// request locally. The caller must retain an independently generated nonce.
     pub fn authorize_release_send(
@@ -257,10 +372,8 @@ impl Member {
     ) -> Result<(AdmissionGrant, u64), Error> {
         let now = self.authorization_time()?;
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
-        let basic = BasicCredential::try_from(self.credential.credential.clone())
-            .map_err(|_| Error::Admission)?;
-        let grant: AdmissionGrant =
-            serde_json::from_slice(basic.identity()).map_err(|_| Error::Admission)?;
+        self.member_id()?;
+        let grant = self.admission_grant()?;
         verify_admission(&grant, trust, &self.chat_public_key(), now)?;
         if context.community_id != trust.community_id
             || context.policy_digest != trust.policy_digest
