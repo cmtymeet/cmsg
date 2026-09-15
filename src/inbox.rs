@@ -13,6 +13,8 @@ mod owner_policy;
 use owner_policy::DirectionalContact;
 #[path = "inbox_replacement.rs"]
 mod replacement_policy;
+#[path = "inbox_accounting.rs"]
+mod accounting_policy;
 use replacement_policy::PendingReplacement;
 pub use replacement_policy::{ReopeningInvitation, ReplacementPreview};
 
@@ -123,6 +125,10 @@ struct StrictIntroduction {
     sent: bool,
     received: bool,
     close_sent: bool,
+    /// Old snapshots remain readable, but cannot issue accounting evidence for
+    /// a group that was never retained with the original introduction.
+    #[serde(default)]
+    accounting_group_id: Option<Vec<u8>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,6 +168,7 @@ impl Drop for Introduction {
         }
         if let Some(strict) = &mut self.strict {
             strict.initial_writer_key.zeroize();
+            if let Some(group) = &mut strict.accounting_group_id { group.zeroize(); }
         }
     }
 }
@@ -586,6 +593,7 @@ impl Inbox {
                     sent: false,
                     received: false,
                     close_sent: false,
+                    accounting_group_id: member.policy_group_id().ok(),
                 }),
             },
         );
@@ -1348,6 +1356,7 @@ impl Inbox {
                         a.role != b.role
                             || a.policy != b.policy
                             || a.initial_writer_key != b.initial_writer_key
+                            || a.accounting_group_id != b.accounting_group_id
                     }
                     (None, None) => false,
                     _ => true,
@@ -1368,6 +1377,7 @@ impl Inbox {
                         if local.role != remote.role
                             || local.policy != remote.policy
                             || local.initial_writer_key != remote.initial_writer_key
+                            || local.accounting_group_id != remote.accounting_group_id
                         {
                             return Err(Error::InvalidState);
                         }
@@ -1594,6 +1604,7 @@ impl Inbox {
                     || strict.policy.response_deadline > 9_007_199_254_740_991
                     || strict.policy.max_intro_bytes == 0
                     || strict.policy.max_intro_bytes > crate::MAX_DATA_BYTES
+                    || strict.accounting_group_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 256)
                     || (introduction.decision == Some(ContactResolutionKind::Answered)
                         && (!strict.sent || !strict.received))
                 {
@@ -1786,6 +1797,7 @@ fn merge_archived_introduction(
             if a.role != b.role
                 || a.policy != b.policy
                 || a.initial_writer_key != b.initial_writer_key
+                || a.accounting_group_id != b.accounting_group_id
             {
                 return Err(Error::InvalidState);
             }

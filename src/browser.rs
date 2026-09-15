@@ -14,6 +14,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use zeroize::Zeroizing;
 
+#[path = "browser_accounting.rs"]
+mod accounting_bindings;
+
 fn js_error(error: Error) -> JsValue {
     JsValue::from_str(&format!("cmsg:{error:?}"))
 }

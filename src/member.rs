@@ -1181,6 +1181,15 @@ fn credential_grant(credential: &Credential) -> Result<AdmissionGrant, Error> {
     Ok(credential_parts(credential)?.0)
 }
 
+pub(crate) fn verify_bound_identity_bytes(
+    bytes: &[u8], key: &[u8], trust: &AdmissionTrust, at: u64,
+) -> Result<String, Error> {
+    if bytes.len() > 8192 { return Err(Error::Admission); }
+    let credential: Credential = BasicCredential::new(bytes.to_vec()).into();
+    if credential_parts(&credential)?.1.is_none() { return Err(Error::Admission); }
+    verify_credential(&credential, key, trust, at)
+}
+
 fn credential_parts(
     credential: &Credential,
 ) -> Result<(AdmissionGrant, Option<DeviceAuthorization>), Error> {

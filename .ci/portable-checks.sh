@@ -74,7 +74,7 @@ else
 fi
 cp browser/package-lock.json "$artifact_dir/browser-package-lock.json"
 cargo fmt --all
-tar --create --file "$artifact_dir/formatted-source.tar" src/*.rs tests/*.rs tests/common/mod.rs examples/*.rs
+tar --create --file "$artifact_dir/formatted-source.tar" src/*.rs tests/*.rs tests/common/*.rs examples/*.rs
 (cd "$artifact_dir" && sha256sum Cargo.lock browser-package-lock.json formatted-source.tar > SHA256SUMS)
 printf 'Validation status: %s\n' "$result"
 exit "$result"

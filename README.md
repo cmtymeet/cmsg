@@ -18,6 +18,7 @@ Browser Tor support includes experimental pinned TorJS/Arti overlays for onion s
 
 - [Messaging contract](docs/contract.md)
 - [Browser-first architecture and current evidence](docs/browser-first.md)
+- [Accounting delegation, receipt and sender acknowledgment extension](docs/accounting-extension.md) (source pending validation)
 - [Browser bindings and experimental Tor adapters](browser/README.md)
 - [Component boundaries](docs/components.md)
 - [Reuse study](studies/messaging-components.md)

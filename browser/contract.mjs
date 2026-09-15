@@ -6,6 +6,7 @@ import {
 import { OnionHttpTransport } from './internal/http.mjs';
 import { OnionFramedStream } from './internal/streams.mjs';
 import { runTorNodeContract } from './tor-node-contract.mjs';
+import { runAccountingContract } from './accounting-contract.mjs';
 
 function assert(condition, label) {
   if (!condition) throw new Error(`browser contract: ${label}`);
@@ -231,9 +232,13 @@ export async function runBrowserContract() {
   assert(sameBytes(guardedReceived.bytes, binary), 'failed receive write preserves retry');
   guardedReceived.free();
   const answer = await recipientInbox.sendText('answer', sessionKey, sessionContext, saveRecipient);
-  const answerReceived = await senderInbox.receive(answer, sessionKey, sessionContext, saveSender);
-  assert(answerReceived.text === 'answer' && !senderInbox.needsResolution(recipientId), 'authenticated answer resolves intro');
-  answerReceived.free();
+  await runAccountingContract({ sender: senderInbox, recipient: recipientInbox, senderId, recipientId, trust: issuer.trust,
+    receiveAnswer: async () => {
+      const answerReceived = await senderInbox.receive(answer, sessionKey, sessionContext, saveSender);
+      assert(answerReceived.text === 'answer' && !senderInbox.needsResolution(recipientId), 'authenticated answer resolves intro');
+      answerReceived.free();
+    } });
+  passed.push('generated Wasm + WebCrypto: actual Inbox Ed25519/P256 receipt, original sender acknowledgment, external delegated key and sealed recovery');
   const queuedBeforeClose = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
   await rejects(() => recipientInbox.blockMemberUntil(senderId, undefined, sessionKey, sessionContext,
     async () => false), 'closure requires acknowledgement');

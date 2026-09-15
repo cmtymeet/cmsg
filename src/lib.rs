@@ -11,6 +11,7 @@
 //! logging relay. This alpha does not provide mobile bindings, storage rollback
 //! protection, guaranteed delivery or an audited anonymity system.
 mod admission;
+mod accounting;
 mod board;
 mod enrollment;
 mod framing;
@@ -29,6 +30,11 @@ mod vault;
 pub mod browser;
 
 pub use admission::{verify_admission, AdmissionGrant, AdmissionTrust};
+pub use accounting::{
+    verify_accounting_acknowledgment, verify_accounting_delegation, verify_accounting_receipt,
+    verify_accounting_acknowledgment_historical, verify_accounting_receipt_historical,
+    AccountRequestAuthorization, AccountingAcknowledgment, AccountingContactContext, AccountingDelegation, AccountingIntroduction, AccountingKey, AccountingReceipt,
+};
 pub use board::{AllocationRequest, PresenceEndpoint, PresenceUpdate};
 pub use enrollment::SemaphoreEnrollmentChallenge;
 pub use framing::FrameCodec;
