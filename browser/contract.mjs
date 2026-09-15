@@ -105,9 +105,9 @@ async function checkpointStore() {
     request.onerror = () => reject(new Error('fixture database open'));
   });
   return {
-    persist: (id) => (checkpoint, outbound) => new Promise((resolve, reject) => {
+    persist: (id) => (checkpoint, outbound, metadata) => new Promise((resolve, reject) => {
       const transaction = db.transaction('sessions', 'readwrite', { durability: 'strict' });
-      transaction.objectStore('sessions').put({ checkpoint, outbound }, id);
+      transaction.objectStore('sessions').put({ checkpoint, outbound, metadata }, id);
       transaction.oncomplete = () => resolve(true);
       transaction.onabort = transaction.onerror = () => reject(new Error('fixture database write'));
     }),
@@ -118,6 +118,20 @@ async function checkpointStore() {
     }),
     close: () => { db.close(); indexedDB.deleteDatabase(name); },
   };
+}
+
+async function liveControls(from,to,key,context,saveFrom,saveTo) {
+  const controls=from.pendingLiveControls();
+  for (const wire of controls) {const result=await to.receive(wire,key,context,saveTo);assert(result.kind==='liveControl','authenticated live control');result.free();}
+  await from.clearLiveControls(key,context,saveFrom);
+}
+async function liveHandshake(a,b,key,context,saveA,saveB) {
+  const until=Math.floor(Date.now()/1000)+120;
+  const ah=await a.beginLiveSession(b.chatPublicKey(),until,key,context,saveA);
+  const bh=await b.beginLiveSession(a.chatPublicKey(),until,key,context,saveB);
+  (await a.receive(bh,key,context,saveA)).free();(await b.receive(ah,key,context,saveB)).free();
+  await liveControls(a,b,key,context,saveA,saveB);await liveControls(b,a,key,context,saveB,saveA);
+  assert(a.liveSessions().length>0 && b.liveSessions().length>0,'mutual fresh live session');
 }
 
 export async function runBrowserContract() {
@@ -220,6 +234,8 @@ export async function runBrowserContract() {
     sessionKey, sessionContext, saveSender);
   await recipientInbox.beginFirstContact(senderId, introductionId, 'recipient', responseDeadline, 64,
     sessionKey, sessionContext, saveRecipient);
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'live session required before payload');
+  await liveHandshake(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
   await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'recipient cannot reply before intro');
   await rejects(() => senderInbox.sendBytes(new Uint8Array(65), sessionKey, sessionContext, saveSender), 'caller intro byte bound');
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, async () => undefined), 'missing durable acknowledgement');
@@ -238,6 +254,7 @@ export async function runBrowserContract() {
       const answerReceived = await senderInbox.receive(answer, sessionKey, sessionContext, saveSender);
       assert(answerReceived.text === 'answer' && !senderInbox.needsResolution(recipientId), 'authenticated answer resolves intro');
       answerReceived.free();
+      await liveControls(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
     } });
   passed.push('generated Wasm + WebCrypto: actual Inbox Ed25519/P256 receipt, original sender acknowledgment, external delegated key and sealed recovery');
   const queuedBeforeClose = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
@@ -290,6 +307,7 @@ export async function runBrowserContract() {
   assert(!senderInbox.isClosed(recipientId), 'archived close cannot close the fresh contact');
   assert((await store.read('sender')).outbound.length === 0, 'archived receipt remains private');
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'new recipient must await actual intro');
+  await liveHandshake(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
   const freshIntro = await recipientInbox.sendText('fresh introduction', sessionKey, sessionContext, saveRecipient);
   await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'fresh initiative still permits only one intro');
   const freshIntroReceived = await senderInbox.receive(freshIntro, sessionKey, sessionContext, saveSender);
@@ -299,6 +317,7 @@ export async function runBrowserContract() {
   const freshAnswerReceived = await recipientInbox.receive(freshAnswer, sessionKey, sessionContext, saveRecipient);
   assert(sameBytes(freshAnswerReceived.bytes, binary), 'authenticated answer resolves fresh initiative');
   freshAnswerReceived.free();
+  await liveControls(recipientInbox,senderInbox,sessionKey,sessionContext,saveRecipient,saveSender);
   const leaseEndpoint = new BrowserOnionEndpoint(ONION, 80);
   const lease = JSON.parse(senderInbox.signPresence(leaseEndpoint, 1, Math.floor(Date.now() / 1000) + 60));
   assert(lease.memberId === senderId && lease.endpoint.host === ONION, 'typed presence binds owner and onion');
@@ -383,6 +402,7 @@ export async function runBrowserContract() {
     'successful retry clears pending control');
   await rejects(() => senderInbox.receive(queuedBeforeReplacement, sessionKey, sessionContext, saveSender), 'old group ciphertext cannot enter replacement');
   await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'replacement recipient waits for actual intro');
+  await liveHandshake(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
   const replacementIntro = await recipientInbox.sendText('replacement introduction', sessionKey, sessionContext, saveRecipient);
   await rejects(() => recipientInbox.sendText('second intro', sessionKey, sessionContext, saveRecipient), 'replacement gets only one introduction');
   const replacementReceived = await senderInbox.receive(replacementIntro, sessionKey, sessionContext, saveSender);
@@ -392,6 +412,24 @@ export async function runBrowserContract() {
   const replacementAnswered = await recipientInbox.receive(replacementAnswer, sessionKey, sessionContext, saveRecipient);
   assert(sameBytes(replacementAnswered.bytes, binary), 'replacement group exchanges authentic answer');
   replacementAnswered.free();
+  await liveControls(recipientInbox,senderInbox,sessionKey,sessionContext,saveRecipient,saveSender);
+  const pendingLive=await senderInbox.sendBytes(binary,sessionKey,sessionContext,saveSender);
+  const savedLive=await store.read('sender');
+  assert(savedLive.metadata.entries[0].kind==='application','atomic outbox identifies live application');
+  const acceptedLive=await recipientInbox.receive(pendingLive,sessionKey,sessionContext,saveRecipient);acceptedLive.free();
+  const originalSid=senderInbox.liveSessions()[0];
+  await senderInbox.loseLiveSession(originalSid,sessionKey,sessionContext,saveSender);
+  assert(!senderInbox.isClosed(recipientId) && !senderInbox.canTransmitLiveWire(pendingLive),'abrupt loss cancels transmit without block');
+  assert((await store.read('sender')).metadata.cancelApplicationIds.length>0,'atomic cancellation metadata');
+  assert(JSON.parse(senderInbox.liveDeliveries()).some(d=>d.status==='canceledUnconfirmed'),'lost ACK is explicitly ambiguous');
+  await liveControls(recipientInbox,senderInbox,sessionKey,sessionContext,saveRecipient,saveSender);
+  assert(JSON.parse(senderInbox.liveDeliveries()).some(d=>d.outgoing && d.status==='accepted'),'late ACK retains committed acceptance');
+  const restoredLive=BrowserInbox.restore((await store.read('sender')).checkpoint,sessionKey,sessionContext);
+  assert(restoredLive.liveSessions().length===0 && !restoredLive.canTransmitLiveWire(pendingLive),'restore cannot replay application outbox');
+  restoredLive.free();
+  await liveHandshake(senderInbox,recipientInbox,sessionKey,sessionContext,saveSender,saveRecipient);
+  await rejects(()=>recipientInbox.receive(pendingLive,sessionKey,sessionContext,saveRecipient),'old session frame rejected after fresh handshake');
+  passed.push('generated Wasm + IndexedDB: fresh live sessions, atomic cancellation, lost ACK recovery and no restored application replay');
   senderReplacement.member.free(); recipientReplacement.member.free();
   passed.push('generated JS API + IndexedDB: fresh-admission replacement group, durable handle transfer, exact restored pending retry and one-introduction gate');
   senderInbox.free(); recipientInbox.free(); sender.identity.free(); recipient.identity.free();

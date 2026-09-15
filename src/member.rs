@@ -63,6 +63,8 @@ pub enum Received {
     ContactClosed,
     /// A signed owner block or fresh-initiative transition was durably applied.
     ContactPolicyChanged,
+    /// Session or delivery evidence changed; this contains no application data.
+    LiveControl,
 }
 impl fmt::Debug for Received {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,6 +74,7 @@ impl fmt::Debug for Received {
             Self::MembershipChanged => f.write_str("MembershipChanged"),
             Self::ContactClosed => f.write_str("ContactClosed"),
             Self::ContactPolicyChanged => f.write_str("ContactPolicyChanged"),
+            Self::LiveControl => f.write_str("LiveControl"),
         }
     }
 }
@@ -613,7 +616,8 @@ impl Member {
             Received::Text(_)
             | Received::Bytes(_)
             | Received::ContactClosed
-            | Received::ContactPolicyChanged => Err(Error::InvalidMessage),
+            | Received::ContactPolicyChanged
+            | Received::LiveControl => Err(Error::InvalidMessage),
         }
     }
 

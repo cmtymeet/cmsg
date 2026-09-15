@@ -18,6 +18,7 @@ mod framing;
 mod identity;
 mod inbox;
 mod lifecycle;
+mod live;
 mod member;
 mod profile;
 mod release;
@@ -49,6 +50,7 @@ pub use inbox::{
     ReplacementPreview,
 };
 pub use lifecycle::Clock;
+pub use live::{DeliveryStatus,LiveDelivery};
 pub use member::{DataMessage, Invitation, Member, Received, TextMessage};
 pub use profile::ProfileChallenge;
 pub use release::{

@@ -55,14 +55,14 @@ export async function runAccountingContract({ sender, recipient, senderId, recip
     const ad = sender.delegateAccounting(senderKey, scheme, new Uint8Array(32).fill(1), now + 120);
     const bd = recipient.delegateAccounting(recipientKey, scheme, new Uint8Array(32).fill(2), now + 120);
     check(verifyAccountingDelegation(bd, trustJson, at()).length === 32, 'root/device verified delegation digest');
+    fails(() => recipient.accountingReceipt(senderId, recipientKey, bd), 'queued Answer has no accepted receipt');
+    await receiveAnswer();
     const receiptJson = recipient.accountingReceipt(senderId, recipientKey, bd);
     const receipt = JSON.parse(receiptJson);
     const transcript = verifyAccountingReceipt(receiptJson, trustJson, at());
     check(transcript.length === 357, 'fixed receipt transcript');
     check(await verify(recipientKey.publicKey(), receipt.signature, transcript), 'Rust receipt verifies in WebCrypto');
-    fails(() => sender.accountingAcknowledgment(recipientId, senderKey, ad, receiptJson), 'unreceived answer cannot yield acknowledgment');
     fails(() => recipient.accountingAcknowledgment(senderId, recipientKey, bd, receiptJson), 'recipient self acknowledgment rejected');
-    await receiveAnswer();
     const ackJson = sender.accountingAcknowledgment(recipientId, senderKey, ad, receiptJson);
     const ack = JSON.parse(ackJson), ackBytes = verifyAccountingAcknowledgment(ackJson, trustJson, at());
     check(ackBytes.length === 255 && await verify(senderKey.publicKey(), ack.signature, ackBytes), 'Rust original sender acknowledgment verifies in WebCrypto');

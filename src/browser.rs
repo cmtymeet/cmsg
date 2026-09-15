@@ -16,6 +16,8 @@ use zeroize::Zeroizing;
 
 #[path = "browser_accounting.rs"]
 mod accounting_bindings;
+#[path = "browser_live.rs"]
+mod live_bindings;
 
 fn js_error(error: Error) -> JsValue {
     JsValue::from_str(&format!("cmsg:{error:?}"))
@@ -309,12 +311,16 @@ async fn persist_browser(
     checkpoint: &[u8],
     outbound: &[Vec<u8>],
 ) -> Result<(), JsValue> {
+    persist_browser_metadata(persist,checkpoint,outbound,&JsValue::NULL).await
+}
+
+async fn persist_browser_metadata(persist:&Function,checkpoint:&[u8],outbound:&[Vec<u8>],metadata:&JsValue)->Result<(),JsValue> {
     let wires = Array::new();
     for wire in outbound {
         wires.push(&Uint8Array::from(wire.as_slice()));
     }
     let promise: Promise = persist
-        .call2(&JsValue::UNDEFINED, &Uint8Array::from(checkpoint), &wires)
+        .call3(&JsValue::UNDEFINED, &Uint8Array::from(checkpoint), &wires,metadata)
         .map_err(|_| js_error(Error::InvalidStore))?
         .dyn_into()
         .map_err(|_| js_error(Error::InvalidStore))?;
@@ -344,9 +350,10 @@ impl BrowserInbox {
             .inbox
             .snapshot(member, key, context)
             .map_err(js_error)?;
-        let (inbox, member) =
+        let (mut inbox, member) =
             Inbox::restore_with_clock(&sealed, key, context, Arc::new(BrowserClock))
                 .map_err(js_error)?;
+        inbox.copy_live_runtime(&self.inbox);
         Ok(Self { inbox, member })
     }
 
@@ -365,7 +372,8 @@ impl BrowserInbox {
             .inbox
             .snapshot(&candidate.member, &key, context)
             .map_err(js_error)?;
-        persist_browser(persist, &checkpoint, &outbound).await?;
+        let metadata=js_sys::JSON::parse(&candidate.inbox.live_outbox_metadata(&outbound).to_string()).map_err(|_|js_error(Error::InvalidStore))?;
+        persist_browser_metadata(persist, &checkpoint, &outbound,&metadata).await?;
         *self = candidate;
         Ok(output)
     }
@@ -488,19 +496,20 @@ impl BrowserInbox {
     #[wasm_bindgen(constructor)]
     pub fn new(member: BrowserMember) -> Result<BrowserInbox, JsValue> {
         Ok(Self {
-            inbox: Inbox::new(&member.member).map_err(js_error)?,
+            inbox: Inbox::new_live(&member.member).map_err(js_error)?,
             member: member.member,
         })
     }
 
     pub fn restore(sealed: &[u8], key: &[u8], context: &[u8]) -> Result<BrowserInbox, JsValue> {
-        let (inbox, member) = Inbox::restore_with_clock(
+        let (mut inbox, member) = Inbox::restore_with_clock(
             sealed,
             &*wrapping_key(key)?,
             context,
             Arc::new(BrowserClock),
         )
         .map_err(js_error)?;
+        inbox.require_live_delivery();
         Ok(Self { inbox, member })
     }
 
@@ -839,7 +848,7 @@ impl BrowserInbox {
                 changed = true;
                 Ok(())
             }) {
-                Ok(received) => Ok((Ok(BrowserReceived { received }), Vec::new())),
+                Ok(received) => Ok((Ok(BrowserReceived { received }), inbox.pending_live_controls())),
                 Err(error) if changed => Ok((Err(error), Vec::new())),
                 Err(error) => Err(error),
             }
@@ -1279,6 +1288,7 @@ impl BrowserReceived {
             Received::MembershipChanged => "membershipChanged",
             Received::ContactClosed => "contactClosed",
             Received::ContactPolicyChanged => "contactPolicyChanged",
+            Received::LiveControl => "liveControl",
         }
         .into()
     }
@@ -1290,7 +1300,8 @@ impl BrowserReceived {
             Received::Bytes(message) => Some(message.member_id.clone()),
             Received::MembershipChanged
             | Received::ContactClosed
-            | Received::ContactPolicyChanged => None,
+            | Received::ContactPolicyChanged
+            | Received::LiveControl => None,
         }
     }
 
@@ -1302,7 +1313,8 @@ impl BrowserReceived {
             Received::Bytes(message) => message.bytes.clone(),
             Received::MembershipChanged
             | Received::ContactClosed
-            | Received::ContactPolicyChanged => Vec::new(),
+            | Received::ContactPolicyChanged
+            | Received::LiveControl => Vec::new(),
         }
     }
 

@@ -13,6 +13,8 @@ mod owner_policy;
 use owner_policy::DirectionalContact;
 #[path = "inbox_accounting.rs"]
 mod accounting_policy;
+#[path = "inbox_live.rs"]
+mod live_policy;
 #[path = "inbox_replacement.rs"]
 mod replacement_policy;
 use replacement_policy::PendingReplacement;
@@ -34,11 +36,19 @@ struct ContactSync {
     introductions: BTreeMap<String, Introduction>,
     directional: BTreeMap<String, DirectionalContact>,
     archived: BTreeMap<String, Vec<Introduction>>,
+    #[serde(default)]
+    live: Option<live_policy::Journal>,
     signature: Vec<u8>,
 }
 
 impl ContactSync {
     fn signing_bytes(&self) -> Result<Vec<u8>, Error> {
+        if self.live.is_some() {
+            return serde_json::to_vec(&serde_json::json!([
+                "cmsg.contact-sync.v2",self.community_id,self.owner_id,self.issued_at,self.device_public_key,
+                self.credential,self.known,self.closed,self.introductions,self.directional,self.archived,self.live,
+            ])).map_err(|_|Error::InvalidMessage);
+        }
         serde_json::to_vec(&serde_json::json!([
             "cmsg.contact-sync.v1",
             self.community_id,
@@ -98,6 +108,7 @@ pub enum Redemption {
 
 pub struct Inbox {
     state: InboxState,
+    runtime: live_policy::Runtime,
 }
 
 /// Explicit first-contact bounds selected by the embedding community. The
@@ -145,6 +156,8 @@ struct InboxState {
     directional: BTreeMap<String, DirectionalContact>,
     archived: BTreeMap<String, Vec<Introduction>>,
     pending: Option<Pending>,
+    #[serde(default)]
+    live: Option<live_policy::Journal>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -234,12 +247,15 @@ impl Inbox {
                 directional: BTreeMap::new(),
                 archived: BTreeMap::new(),
                 pending: None,
+                live: None,
             },
+            runtime: live_policy::Runtime::default(),
         })
     }
     fn duplicate(&self) -> Self {
         Self {
             state: self.state.clone(),
+            runtime: self.runtime.clone(),
         }
     }
 
@@ -631,10 +647,9 @@ impl Inbox {
                 .then(|| peer.clone())
             })
             .collect();
-        if expired.is_empty() {
-            return Ok(0);
-        }
         let mut changed = self.duplicate();
+        let ended=changed.expire_live_sessions(now);
+        if expired.is_empty() && ended==0 { return Ok(0); }
         for peer in &expired {
             let intro = changed
                 .state
@@ -668,7 +683,7 @@ impl Inbox {
         }
         persist(&changed.seal(member, key, context)?)?;
         *self = changed;
-        Ok(expired.len())
+        Ok(expired.len()+ended)
     }
 
     /// Send one introduction, an actual reply, or established conversation text.
@@ -713,6 +728,9 @@ impl Inbox {
         mut persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
     ) -> Result<Vec<u8>, Error> {
         self.apply_deadlines(member, key, context, |checkpoint| persist(checkpoint, &[]))?;
+        if self.state.live.is_some() {
+            return self.send_live_data(member,bytes,text,None,key,context,persist);
+        }
         let peer = self.contact_peer(member)?;
         self.check_exclusions(member)?;
         self.check_selected_group(&peer, member)?;
@@ -793,6 +811,9 @@ impl Inbox {
         let raw = candidate.receive_policy_excluding(wire, &excluded)?;
         let mut changed = self.duplicate();
         let received = match &raw {
+            Received::Bytes(message) if message.member_id==peer && message.bytes.starts_with(crate::live::PREFIX) => {
+                changed.receive_live_record(&mut candidate,&message.bytes[crate::live::PREFIX.len()..],&peer)?
+            }
             Received::Bytes(message)
                 if message.member_id == peer
                     && message.bytes.starts_with(CONTACT_DIRECTIVE_PREFIX) =>
@@ -828,6 +849,7 @@ impl Inbox {
                 Received::MembershipChanged
             }
             Received::Bytes(message) if message.bytes.starts_with(CONTACT_DATA_PREFIX) => {
+                if changed.state.live.is_some() {return Err(Error::Admission);}
                 changed.check_selected_group(&peer, &candidate)?;
                 let record = &message.bytes[CONTACT_DATA_PREFIX.len()..];
                 if peer_excluded
@@ -876,6 +898,7 @@ impl Inbox {
             }
             _ => return Err(Error::InvalidMessage),
         };
+        changed.validate_state(&candidate)?;
         persist(&changed.seal(&candidate, key, context)?)?;
         *member = candidate;
         *self = changed;
@@ -1207,6 +1230,7 @@ impl Inbox {
             introductions: self.state.introductions.clone(),
             directional: self.state.directional.clone(),
             archived: self.state.archived.clone(),
+            live: self.state.live.clone(),
             signature: Vec::new(),
         };
         sync.signature = member
@@ -1284,11 +1308,16 @@ impl Inbox {
                 pending: None,
                 directional: sync.directional.clone(),
                 archived: sync.archived.clone(),
+                live: sync.live.clone(),
             },
+            runtime: live_policy::Runtime::default(),
         };
         incoming_state.validate_state(member)?;
         let mut changed = self.duplicate();
         changed.state.known.extend(sync.known.iter().cloned());
+        if let Some(incoming)=&sync.live {
+            changed.state.live.get_or_insert_with(Default::default).merge(incoming)?;
+        }
         changed.state.closed.extend(sync.closed.iter().cloned());
         for (peer, incoming) in &sync.directional {
             changed
@@ -1466,11 +1495,13 @@ impl Inbox {
     /// Enforce local contact exclusions before encrypting any new text. A group
     /// containing a closed member must remove that member before further sends.
     pub fn send(&self, member: &mut Member, text: &[u8]) -> Result<Vec<u8>, Error> {
+        if self.state.live.is_some() {return Err(Error::Admission);}
         self.check_outbound(member)?;
         member.send(text)
     }
 
     pub fn send_bytes(&self, member: &mut Member, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        if self.state.live.is_some() {return Err(Error::Admission);}
         self.check_outbound(member)?;
         member.send_bytes(bytes)
     }
@@ -1515,6 +1546,7 @@ impl Inbox {
     /// changing receive ratchets, or appending history. A control message cannot
     /// silently reintroduce a closed identity under a different device key.
     pub fn receive(&self, member: &mut Member, wire: &[u8]) -> Result<Received, Error> {
+        if self.state.live.is_some() {return Err(Error::Admission);}
         self.check_binding(member)?;
         self.check_unresolved(member)?;
         member.receive_excluding(wire, &self.excluded())
@@ -1537,6 +1569,7 @@ impl Inbox {
 
     fn validate_state(&self, member: &Member) -> Result<(), Error> {
         self.check_binding(member)?;
+        if let Some(journal)=&self.state.live {journal.validate(member,&self.state.recipient_id)?;}
         if self
             .state
             .known
@@ -1751,10 +1784,12 @@ impl Inbox {
         let plaintext = crate::vault::open(sealed, key, &inbox_context(context)?)?;
         let bundle: Bundle = serde_json::from_slice(&plaintext).map_err(|_| Error::InvalidStore)?;
         let member = Member::restore_with_clock(&bundle.member, key, context, clock)?;
-        let inbox = Self {
+        let mut inbox = Self {
             state: bundle.inbox,
+            runtime: live_policy::Runtime::default(),
         };
         inbox.validate_state(&member)?;
+        inbox.cancel_restored_live();
         Ok((inbox, member))
     }
 }
