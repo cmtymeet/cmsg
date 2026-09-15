@@ -3,6 +3,8 @@
 //! This fixture does not authorize production genesis/reservations or balances.
 #[path = "../tests/common/mod.rs"]
 mod common;
+#[path="accounting_fixture/reservation.rs"]
+mod reservation;
 use cmsg::{
     AccountingAcknowledgment, AccountingDelegation, AccountingReceipt, ContactResolutionKind,
 };
@@ -42,6 +44,9 @@ enum Request {
         peer_expires: Option<u64>,
     },
     Answer,
+    PrepareGate,
+    AuthorizeIncoming { #[serde(rename="outgoingPresentation")] outgoing_presentation:Value },
+    BindGate { #[serde(rename="outgoingPresentation")] outgoing_presentation:Value, #[serde(rename="incomingPresentation")] incoming_presentation:Value },
     Advance {
         now: u64,
     },
@@ -107,6 +112,7 @@ struct State {
     pair: Pair,
     originals: Vec<AccountingDelegation>,
     phase: u8,
+    bridge: Option<reservation::Bridge>,
 }
 fn enroll(keys: &[PublicKey], peer_expires: u64) -> Result<State> {
     if !(2..=16).contains(&keys.len()) || !(101..=10_000).contains(&peer_expires) {
@@ -137,8 +143,10 @@ fn enroll(keys: &[PublicKey], peer_expires: u64) -> Result<State> {
     }
     pair.ad = originals[0].clone();
     pair.bd = originals[1].clone();
+    let bridge=reservation::Bridge::configured(&mut pair)?;
     Ok(State {
         pair,
+        bridge,
         originals,
         phase: 0,
     })
@@ -153,6 +161,11 @@ fn bound_original(state: &State, d: &AccountingDelegation) -> Result<()> {
         return Err("changed original delegation");
     }
     Ok(())
+}
+fn send_intro(state:&mut State)->Result<()> {
+    let storage=state.bridge.clone();
+    let wire=core(state.pair.ai.send_contact(&mut state.pair.a,b"introduction",&KEY,CONTEXT,|checkpoint,_|match &storage {Some(s)=>s.save(0,checkpoint),None=>Ok(())}))?;
+    core(state.pair.bi.receive_contact(&mut state.pair.b,&wire,&KEY,CONTEXT,|checkpoint|match &storage {Some(s)=>s.save(1,checkpoint),None=>Ok(())}))?;Ok(())
 }
 fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     if let Request::Enroll { keys, peer_expires } = request {
@@ -176,6 +189,26 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     }
     let state = state.as_mut().ok_or("enroll first")?;
     match request {
+        Request::PrepareGate => {
+            state.bridge.as_ref().ok_or("trusted peer verifier is not configured")?;
+            let contexts=core(state.pair.ai.reservation_contexts(&state.pair.a))?;
+            if contexts!=core(state.pair.bi.reservation_contexts(&state.pair.b))? {return Err("peer context disagreement");}
+            serde_json::to_value(contexts).map_err(|_|"context encoding")
+        }
+        Request::AuthorizeIncoming {outgoing_presentation} => {
+            let mut verifier=state.bridge.clone().ok_or("trusted peer verifier is not configured")?;let storage=verifier.clone();
+            let evidence=serde_json::to_vec(&outgoing_presentation).map_err(|_|"presentation encoding")?;
+            core(state.pair.bi.authorize_incoming_reservation(&state.pair.b,&evidence,&mut verifier,&KEY,CONTEXT,|checkpoint|storage.save(1,checkpoint)))?;
+            Ok(json!({"authorized":true}))
+        }
+        Request::BindGate {outgoing_presentation,incoming_presentation} => {
+            let mut verifier=state.bridge.clone().ok_or("trusted peer verifier is not configured")?;let storage=verifier.clone();
+            let a=serde_json::to_vec(&outgoing_presentation).map_err(|_|"presentation encoding")?;
+            let b=serde_json::to_vec(&incoming_presentation).map_err(|_|"presentation encoding")?;
+            core(state.pair.ai.bind_active_reservations(&state.pair.a,&a,&b,&mut verifier,&KEY,CONTEXT,|checkpoint|storage.save(0,checkpoint)))?;
+            core(state.pair.bi.bind_active_reservations(&state.pair.b,&a,&b,&mut verifier,&KEY,CONTEXT,|checkpoint|storage.save(1,checkpoint)))?;
+            Ok(json!({"bound":true}))
+        }
         Request::Advance { now } => {
             if !matches!(state.phase, 1 | 2) || !matches!(now, 300 | 600) || state.pair.time.0.load(Ordering::Relaxed) > now {
                 return Err("fixture clock transition");
@@ -187,7 +220,7 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
             if state.phase != 0 {
                 return Err("fixture scenario already used");
             }
-            state.pair.send_intro();
+            send_intro(state)?;
             let wire = state.pair.send_answer();
             core(
                 state
@@ -209,7 +242,7 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
             if state.phase != 0 || !(100..10_000).contains(&now) {
                 return Err("fixture scenario bounds");
             }
-            state.pair.send_intro();
+            send_intro(state)?;
             state.pair.time.0.store(now, Ordering::Relaxed);
             core(state.pair.bi.resolve_introduction(
                 state.pair.ar.member_id(),

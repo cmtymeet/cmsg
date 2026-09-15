@@ -18,6 +18,8 @@ use zeroize::Zeroizing;
 mod accounting_bindings;
 #[path = "browser_live.rs"]
 mod live_bindings;
+#[path="browser_reservation.rs"]
+mod reservation_bindings;
 
 fn js_error(error: Error) -> JsValue {
     JsValue::from_str(&format!("cmsg:{error:?}"))

@@ -16,7 +16,7 @@ include = [
     "src/**",
     "browser/**",
     "tests/**",
-    "examples/*.rs",
+    "examples/**/*.rs",
     "docs/*.md",
     "studies/*.md",
     "experiments/**/*.md",

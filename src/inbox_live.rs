@@ -5,7 +5,7 @@ use crate::{DeliveryStatus,LiveDelivery};
 
 #[derive(Clone,Default)]
 pub(super) struct Runtime {
-    opening:BTreeMap<String,Envelope>, ready:BTreeSet<String>,
+    opening:BTreeMap<String,Envelope>, ready:BTreeSet<String>, pub(super) reservations:BTreeSet<String>,
 }
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -258,6 +258,7 @@ impl Inbox {
     }
     pub(super) fn send_live_data(&mut self,member:&mut Member,bytes:&[u8],text:bool,selected:Option<&[u8;32]>,key:&[u8;32],context:&[u8],
         mut persist:impl FnMut(&[u8],&[u8])->Result<(),Error>)->Result<Vec<u8>,Error> {
+        self.check_reservation_release(member)?;
         let peer=self.contact_peer(member)?;self.check_exclusions(member)?;self.check_selected_group(&peer,member)?;
         let sid=match selected {Some(id)=>{self.session_ready(id,member)?;*id},None=>self.live_sessions().into_iter().find(|id|self.session_ready(id,member).is_ok()).ok_or(Error::Admission)?};
         let intro=self.state.introductions.get(&peer).ok_or(Error::InvalidState)?;
@@ -266,7 +267,7 @@ impl Inbox {
             FirstContactRole::Initiator=>strict.sent || strict.initial_writer_key!=member.chat_public_key(),
             FirstContactRole::Recipient=>!strict.received || self.state.live.as_ref().unwrap().deliveries.values().any(|r|
                 r.summary.outgoing && r.introduction==intro.id && r.resolution.is_some() && r.summary.status==DeliveryStatus::Pending
-                && self.session_ready(&r.summary.session_id,member).is_ok())),
+                && self.session_ready(&r.summary.session_id,member).is_ok()),
         }) {return Err(Error::Admission);}
         let message=live::random()?;let envelope=member.sign_live(&peer,&intro.id,Body::Data {session:sid,message,text,payload:bytes.to_vec()})?;
         let resolution=if intro.decision.is_none() && strict.role==FirstContactRole::Recipient {
@@ -316,6 +317,7 @@ impl Inbox {
                 self.runtime.ready.insert(id.clone());Ok(Received::LiveControl)
             }
             Body::Data {session,message,text,payload}=>{
+                self.check_reservation_release(member)?;
                 let stored=self.session_ready(session,member)?;
                 if stored.peer.device!=envelope.device || stored.peer.credential!=envelope.credential {return Err(Error::Admission);}
                 let digest=envelope.digest()?;let id=live::id(message);

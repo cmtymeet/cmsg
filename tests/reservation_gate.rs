@@ -1,0 +1,56 @@
+mod common;
+use common::accounting::{Pair,KEY,CONTEXT};
+use cmsg::{Error,ReservationPolicy,ReservationContext,ReservationVerifier,VerifiedReservation};
+// Storage/authorization boundary test double; these tests do not prove ZK validity.
+struct Verifier {bad_role:bool,local_current:bool}
+impl ReservationVerifier for Verifier {
+ fn verify_remote(&mut self,_:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {
+  let mut expected=c.expected.clone();if self.bad_role {expected.phase=1;}
+  Ok(VerifiedReservation {expected,account_policy_digest:[7;32],state_version:3,state_commitment:[8;32],presentation_binding:[9;32]})
+ }
+ fn verify_current_local(&mut self,e:&[u8],c:&ReservationContext)->Result<VerifiedReservation,Error> {if !self.local_current {return Err(Error::Admission);}self.verify_remote(e,c)}
+}
+fn configure(p:&mut Pair) {
+ let policy=ReservationPolicy {account_policy_digest:[7;32],opened_at:100,abandon_after:400};
+ let a=p.ai.require_active_reservations(&p.a,policy.clone(),&KEY,CONTEXT,|_|Ok(())).unwrap();
+ let b=p.bi.require_active_reservations(&p.b,policy,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.ai.set_own_reservation_challenge(&p.a,&b.outgoing.expected.challenge,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.bi.set_own_reservation_challenge(&p.b,&a.incoming.expected.challenge,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ assert_eq!(p.ai.reservation_contexts(&p.a).unwrap(),p.bi.reservation_contexts(&p.b).unwrap());
+}
+#[test]
+fn prepared_or_missing_local_state_or_unconsented_incoming_never_releases_payload() {
+ let mut p=Pair::configured(10_000);configure(&mut p);
+ let mut verifier=Verifier {bad_role:false,local_current:true};
+ assert!(p.ai.send_contact(&mut p.a,b"not active",&KEY,CONTEXT,|_,_|panic!("no publication")).is_err());
+ assert!(p.bi.bind_active_reservations(&p.b,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|panic!("explicit consent required")).is_err());
+ verifier.bad_role=true;
+ assert!(p.bi.authorize_incoming_reservation(&p.b,b"prepared",&mut verifier,&KEY,CONTEXT,|_|panic!("Prepared is insufficient")).is_err());
+ verifier.bad_role=false;
+ p.bi.authorize_incoming_reservation(&p.b,b"active",&mut verifier,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ verifier.local_current=false;
+ assert!(p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|panic!("own accepted state superseded")).is_err());
+ verifier.local_current=true;
+ assert!(p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|Err(Error::InvalidStore)).is_err());
+ assert!(p.ai.send_contact(&mut p.a,b"not committed",&KEY,CONTEXT,|_,_|panic!("no publication")).is_err());
+ p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ let intro=p.ai.send_contact(&mut p.a,b"protected",&KEY,CONTEXT,|_,_|Ok(())).unwrap();
+ assert!(p.bi.receive_contact(&mut p.b,&intro,&KEY,CONTEXT,|_|panic!("recipient requires both Active")).is_err());
+ p.bi.bind_active_reservations(&p.b,b"a",b"b",&mut verifier,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.bi.receive_contact(&mut p.b,&intro,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ assert!(p.ai.send_contact(&mut p.a,b"second intro",&KEY,CONTEXT,|_,_|panic!("proof cannot reset quota")).is_err());
+}
+#[test]
+fn restore_close_and_reopening_keep_old_proofs_from_reauthorizing_another_contact() {
+ let mut p=Pair::configured(10_000);configure(&mut p);let mut v=Verifier {bad_role:false,local_current:true};
+ p.bi.authorize_incoming_reservation(&p.b,b"a",&mut v,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut v,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ let sealed=p.ai.snapshot(&p.a,&KEY,CONTEXT).unwrap();let (ai,a)=cmsg::Inbox::restore_with_clock(&sealed,&KEY,CONTEXT,p.time.clone()).unwrap();p.ai=ai;p.a=a;
+ assert!(p.ai.send_contact(&mut p.a,b"restored proof",&KEY,CONTEXT,|_,_|panic!("reverify current local slot")).is_err());
+ let close=p.bi.close_contact(&mut p.b,&KEY,CONTEXT,|_,_|Ok(())).unwrap();p.ai.receive_contact(&mut p.a,&close,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ assert!(p.ai.bind_active_reservations(&p.a,b"a",b"b",&mut v,&KEY,CONTEXT,|_|panic!("closed context")).is_err());
+ let fresh=p.bi.initiate_contact(&mut p.b,&[95;32],cmsg::FirstContactPolicy {response_deadline:1000,max_intro_bytes:128},&KEY,CONTEXT,|_,_|Ok(())).unwrap();
+ p.ai.receive_contact(&mut p.a,&fresh,&KEY,CONTEXT,|_|Ok(())).unwrap();
+ assert!(p.ai.reservation_contexts(&p.a).is_err());
+ assert!(p.bi.send_contact(&mut p.b,b"fresh but unpaid",&KEY,CONTEXT,|_,_|panic!("new nonce needs new matched reservations")).is_err());
+}

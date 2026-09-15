@@ -24,6 +24,8 @@ mod profile;
 mod release;
 mod rendezvous;
 mod roster;
+mod reservation;
+pub use reservation::{ReservationContext,ReservationContexts,ReservationExpectation,ReservationPolicy,ReservationVerifier,VerifiedReservation};
 mod transport;
 mod vault;
 
