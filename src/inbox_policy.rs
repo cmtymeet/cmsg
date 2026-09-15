@@ -41,13 +41,21 @@ impl DirectionalContact {
         match (local, peer) {
             (Some(a), Some(b)) if a.introduction_id == b.introduction_id
                 && a.policy == b.policy && a.group_id == b.group_id && a.initiator_id == b.initiator_id => Ok(Some(a)),
-            (Some(a), Some(b)) if a.peer_digest == b.digest()? => Ok(Some(a)),
-            (Some(a), Some(b)) if b.peer_digest == a.digest()? => Ok(Some(b)),
+            (Some(a), Some(b)) if a.peer_digest == b.digest()? && Self::closed_after(&self.local, b)? => Ok(Some(a)),
+            (Some(a), Some(b)) if b.peer_digest == a.digest()? && Self::closed_after(&self.peer, a)? => Ok(Some(b)),
             (Some(_), Some(_)) => Err(Error::InvalidState),
             (Some(a), None) => Ok(Some(a)),
             (None, Some(b)) => Ok(Some(b)),
             (None, None) => Ok(None),
         }
+    }
+
+    fn closed_after(chain: &[ContactDirective], other: &ContactDirective) -> Result<bool, Error> {
+        let Some(block) = chain.iter().rev().nth(1).filter(|d| d.kind == DirectiveKind::Block) else { return Ok(false); };
+        if block.introduction_id == other.introduction_id { return Ok(true); }
+        let acknowledged = other.digest()?;
+        Ok(chain[..chain.len() - 2].iter().any(|earlier| earlier.kind == DirectiveKind::FreshInitiative
+            && earlier.introduction_id == block.introduction_id && earlier.peer_digest == acknowledged))
     }
 
     pub(super) fn selected_nonce(&self) -> Result<Option<[u8; 32]>, Error> {
@@ -324,6 +332,13 @@ impl Inbox {
                     return Err(Error::Admission);
                 }
             } else {
+                if let Some(local) = local.filter(|d| d.kind == DirectiveKind::FreshInitiative) {
+                    let explicitly_closed_current = DirectionalContact::closed_after(&control.chain, local)?;
+                    let unsent_local_offer = self.state.introductions.get(peer).is_some_and(|i| i.id == local.introduction_id
+                        && i.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator && !s.sent));
+                    if (!explicitly_closed_current || unsent_local_offer)
+                        && newest.introduction_id != local.introduction_id { return Err(Error::Admission); }
+                }
                 if self.state.introductions.get(peer).is_some_and(|i| i.id == newest.introduction_id)
                     && !self.state.directional.get(peer).and_then(|h| h.peer.last())
                         .is_some_and(|d| d.digest().ok() == newest.digest().ok()) {

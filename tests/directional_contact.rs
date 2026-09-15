@@ -32,7 +32,7 @@ struct Pair {
     a: Member, b: Member, ai: Inbox, bi: Inbox,
     ar: MemberIdentity, br: MemberIdentity, time: Arc<Time>,
 }
-fn pending() -> Pair {
+fn configured() -> Pair {
     let time = Arc::new(Time(AtomicU64::new(100)));
     let ar = MemberIdentity::new("synthetic-community").unwrap();
     let br = MemberIdentity::new("synthetic-community").unwrap();
@@ -44,9 +44,14 @@ fn pending() -> Pair {
     let mut bi = Inbox::new(&b).unwrap();
     ai.begin_first_contact(br.member_id(), &INITIAL, Role::Initiator, policy(), &a, &KEY, CONTEXT, |_| Ok(())).unwrap();
     bi.begin_first_contact(ar.member_id(), &INITIAL, Role::Recipient, policy(), &b, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    let intro = ai.send_contact(&mut a, b"initial introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
-    bi.receive_contact(&mut b, &intro, &KEY, CONTEXT, |_| Ok(())).unwrap();
     Pair { a, b, ai, bi, ar, br, time }
+}
+
+fn pending() -> Pair {
+    let mut p = configured();
+    let intro = p.ai.send_contact(&mut p.a, b"initial introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.bi.receive_contact(&mut p.b, &intro, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    p
 }
 
 fn established() -> Pair {
@@ -237,15 +242,15 @@ fn a_valid_peer_signature_cannot_change_the_initiative_it_claims_to_accept() {
     p.bi.receive_contact(&mut p.b, &offer, &KEY, CONTEXT, |_| Ok(())).unwrap();
     let owner_chain = chain(&p.ai, &p.a, p.br.member_id());
     let acknowledgement = owner_chain.last().unwrap().digest().unwrap();
-    for mutation in 0..5 {
+    for mutation in 0..6 {
         let mut history = chain(&p.bi, &p.b, p.ar.member_id());
         let previous = history.last().unwrap();
-        let nonce = if mutation == 0 { [77; 32] } else { FRESH };
+        let nonce = if mutation == 0 || mutation == 5 { [77; 32] } else { FRESH };
         let mut limits = policy();
-        if mutation == 1 { limits.response_deadline += 1; }
+        if mutation == 1 || mutation == 5 { limits.response_deadline += 1; }
         if mutation == 2 { limits.max_intro_bytes -= 1; }
         let group = if mutation == 3 { vec![9; 32] } else { previous.group_id.clone() };
-        let initiator = if mutation == 4 { p.br.member_id() } else { p.ar.member_id() };
+        let initiator = if mutation == 4 || mutation == 5 { p.br.member_id() } else { p.ar.member_id() };
         let forged = p.b.sign_contact_directive(p.ar.member_id(), previous.revision + 1, &previous.digest().unwrap(), &acknowledgement,
             cmsg::ContactDirectiveKind::FreshInitiative, &nonce, initiator, &group, Some(limits), None).unwrap();
         history.push(forged);
@@ -259,29 +264,25 @@ fn a_valid_peer_signature_cannot_change_the_initiative_it_claims_to_accept() {
 
 #[test]
 fn stale_signed_archives_cannot_erase_an_unresolved_sent_introduction() {
-    let mut p = established();
-    let close = p.bi.close_contact(&mut p.b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
-    p.ai.receive_contact(&mut p.a, &close, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    let reopen = p.bi.initiate_contact(&mut p.b, &FRESH, policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
-    p.ai.receive_contact(&mut p.a, &reopen, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    let before_send = p.bi.snapshot(&p.b, &KEY, CONTEXT).unwrap();
-    let first = p.bi.send_contact(&mut p.b, b"an outstanding introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
-    p.ai.receive_contact(&mut p.a, &first, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    p.ai.block_member_until(p.br.member_id(), None, &p.a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let mut p = configured();
+    let before_send = p.ai.snapshot(&p.a, &KEY, CONTEXT).unwrap();
+    let first = p.ai.send_contact(&mut p.a, b"an outstanding introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.bi.receive_contact(&mut p.b, &first, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    p.bi.block_member_until(p.ar.member_id(), None, &p.b, &KEY, CONTEXT, |_| Ok(())).unwrap();
     // The recipient's private decision allows its own new initiative, but its
     // separate resolution receipt has not yet reached the original sender.
-    let newer = p.ai.initiate_contact(&mut p.a, &[78; 32], policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
-    p.bi.receive_contact(&mut p.b, &newer, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    assert!(p.bi.awaiting_peer_resolution(p.ar.member_id()));
-    let (mut stale, mut old_b) = Inbox::restore_with_clock(&before_send, &KEY, CONTEXT, p.time.clone()).unwrap();
-    stale.receive_contact(&mut old_b, &newer, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    assert!(!stale.awaiting_peer_resolution(p.ar.member_id()), "an old authentic snapshot lacks the later send");
-    let stale_sync = stale.export_contact_sync(&old_b).unwrap();
-    let current_sync = p.bi.export_contact_sync(&p.b).unwrap();
-    p.bi.merge_contact_sync(&stale_sync, &p.b, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    assert!(p.bi.awaiting_peer_resolution(p.ar.member_id()), "archive merge must preserve sent=true");
-    stale.merge_contact_sync(&current_sync, &old_b, &KEY, CONTEXT, |_| Ok(())).unwrap();
-    assert!(stale.awaiting_peer_resolution(p.ar.member_id()), "current peer evidence heals the rolled-back send floor");
+    let newer = p.bi.initiate_contact(&mut p.b, &FRESH, policy(), &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    p.ai.receive_contact(&mut p.a, &newer, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(p.ai.awaiting_peer_resolution(p.br.member_id()));
+    let (mut stale, mut old_a) = Inbox::restore_with_clock(&before_send, &KEY, CONTEXT, p.time.clone()).unwrap();
+    stale.receive_contact(&mut old_a, &newer, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(!stale.awaiting_peer_resolution(p.br.member_id()), "an old authentic snapshot lacks the later send");
+    let stale_sync = stale.export_contact_sync(&old_a).unwrap();
+    let current_sync = p.ai.export_contact_sync(&p.a).unwrap();
+    p.ai.merge_contact_sync(&stale_sync, &p.a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(p.ai.awaiting_peer_resolution(p.br.member_id()), "archive merge must preserve sent=true");
+    stale.merge_contact_sync(&current_sync, &old_a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    assert!(stale.awaiting_peer_resolution(p.br.member_id()), "current peer evidence heals the rolled-back send floor");
 }
 
 #[test]
