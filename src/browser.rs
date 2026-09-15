@@ -43,6 +43,16 @@ fn timestamp(seconds: f64) -> Result<u64, JsValue> {
     Ok(seconds as u64)
 }
 
+fn contact_policy(response_deadline: f64, max_intro_bytes: f64) -> Result<FirstContactPolicy, JsValue> {
+    if !max_intro_bytes.is_finite() || max_intro_bytes.fract() != 0.0
+        || !(1.0..=MAX_DATA_BYTES as f64).contains(&max_intro_bytes)
+    { return Err(js_error(Error::Admission)); }
+    Ok(FirstContactPolicy {
+        response_deadline: timestamp(response_deadline)?,
+        max_intro_bytes: max_intro_bytes as usize,
+    })
+}
+
 /// Member-controlled community identity. The private root key is never exported;
 /// recovery returns only an authenticated encrypted envelope.
 #[wasm_bindgen]
@@ -440,10 +450,7 @@ impl BrowserInbox {
             "recipient" => FirstContactRole::Recipient,
             _ => return Err(js_error(Error::Admission)),
         };
-        if !max_intro_bytes.is_finite() || max_intro_bytes.fract() != 0.0
-            || !(1.0..=MAX_DATA_BYTES as f64).contains(&max_intro_bytes)
-        { return Err(js_error(Error::Admission)); }
-        let policy = FirstContactPolicy { response_deadline: timestamp(response_deadline)?, max_intro_bytes: max_intro_bytes as usize };
+        let policy = contact_policy(response_deadline, max_intro_bytes)?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
             inbox.begin_first_contact(peer, introduction_id, role, policy, member, &wrapping, context, |_| Ok(()))?;
@@ -538,9 +545,40 @@ impl BrowserInbox {
 
     #[wasm_bindgen(js_name = closeContact)]
     pub async fn close_contact(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        self.close_contact_until(None, key, context, persist).await
+    }
+
+    /// Close until the blocking member explicitly starts again. An optional
+    /// expiry permits a later fresh initiative; it never revives old traffic.
+    #[wasm_bindgen(js_name = closeContactUntil)]
+    pub async fn close_contact_until(&mut self, until: Option<f64>, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        let until = until.map(timestamp).transpose()?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
-            let wire = inbox.close_contact(member, &wrapping, context, |_, _| Ok(()))?;
+            let wire = inbox.close_contact_until(member, until, &wrapping, context, |_, _| Ok(()))?;
+            Ok((wire.clone(), vec![wire]))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = initiateContact)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn initiate_contact(&mut self, introduction_id: &[u8], response_deadline: f64, max_intro_bytes: f64,
+        key: &[u8], context: &[u8], persist: Function,
+    ) -> Result<Vec<u8>, JsValue> {
+        let introduction_id: &[u8; 32] = introduction_id.try_into().map_err(|_| js_error(Error::Admission))?;
+        let policy = contact_policy(response_deadline, max_intro_bytes)?;
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            let wire = inbox.initiate_contact(member, introduction_id, policy, &wrapping, context, |_, _| Ok(()))?;
+            Ok((wire.clone(), vec![wire]))
+        }).await
+    }
+
+    #[wasm_bindgen(js_name = consentContact)]
+    pub async fn consent_contact(&mut self, key: &[u8], context: &[u8], persist: Function) -> Result<Vec<u8>, JsValue> {
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            let wire = inbox.consent_contact(member, &wrapping, context, |_, _| Ok(()))?;
             Ok((wire.clone(), vec![wire]))
         }).await
     }
@@ -597,11 +635,12 @@ impl BrowserInbox {
         Ok(acceptance_name(result))
     }
 
-    #[wasm_bindgen(js_name = closeForever)]
-    pub async fn close_forever(&mut self, peer: &str, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+    #[wasm_bindgen(js_name = blockMemberUntil)]
+    pub async fn block_member_until(&mut self, peer: &str, until: Option<f64>, key: &[u8], context: &[u8], persist: Function) -> Result<(), JsValue> {
+        let until = until.map(timestamp).transpose()?;
         let wrapping = wrapping_key(key)?;
         self.update(key, context, &persist, |inbox, member| {
-            inbox.close_forever(peer, member, &wrapping, context, |_| Ok(()))?;
+            inbox.block_member_until(peer, until, member, &wrapping, context, |_| Ok(()))?;
             Ok(((), Vec::new()))
         }).await
     }
@@ -682,6 +721,7 @@ impl BrowserReceived {
             Received::Bytes(_) => "bytes",
             Received::MembershipChanged => "membershipChanged",
             Received::ContactClosed => "contactClosed",
+            Received::ContactPolicyChanged => "contactPolicyChanged",
         }
         .into()
     }
@@ -691,7 +731,7 @@ impl BrowserReceived {
         match &self.received {
             Received::Text(message) => Some(message.member_id.clone()),
             Received::Bytes(message) => Some(message.member_id.clone()),
-            Received::MembershipChanged | Received::ContactClosed => None,
+            Received::MembershipChanged | Received::ContactClosed | Received::ContactPolicyChanged => None,
         }
     }
 
@@ -701,7 +741,7 @@ impl BrowserReceived {
         match &self.received {
             Received::Text(message) => message.text.as_bytes().to_vec(),
             Received::Bytes(message) => message.bytes.clone(),
-            Received::MembershipChanged | Received::ContactClosed => Vec::new(),
+            Received::MembershipChanged | Received::ContactClosed | Received::ContactPolicyChanged => Vec::new(),
         }
     }
 

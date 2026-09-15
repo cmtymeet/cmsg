@@ -229,12 +229,13 @@ export async function runBrowserContract() {
   const answerReceived = await senderInbox.receive(answer, sessionKey, sessionContext, saveSender);
   assert(answerReceived.text === 'answer' && !senderInbox.needsResolution(recipientId), 'authenticated answer resolves intro');
   answerReceived.free();
-  await rejects(() => recipientInbox.closeForever(senderId, sessionKey, sessionContext,
+  const queuedBeforeClose = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
+  await rejects(() => recipientInbox.blockMemberUntil(senderId, undefined, sessionKey, sessionContext,
     async () => false), 'closure requires acknowledgement');
   assert(!recipientInbox.isClosed(senderId), 'failed closure write preserves policy');
-  await recipientInbox.closeForever(senderId, sessionKey, sessionContext, saveRecipient);
+  await recipientInbox.blockMemberUntil(senderId, undefined, sessionKey, sessionContext, saveRecipient);
   await recipientInbox.setBlocked(senderId, false, sessionKey, sessionContext, saveRecipient);
-  assert(recipientInbox.isClosed(senderId), 'closure is permanent');
+  assert(recipientInbox.isClosed(senderId), 'temporary flag cannot clear owned block');
   await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'closed contact cannot send');
   const closeWire = await recipientInbox.closeContact(sessionKey, sessionContext, saveRecipient);
   const closeReceived = await senderInbox.receive(closeWire, sessionKey, sessionContext, saveSender);
@@ -247,6 +248,30 @@ export async function runBrowserContract() {
   const restoredInbox = BrowserInbox.restore((await store.read('recipient')).checkpoint, sessionKey, sessionContext);
   assert(restoredInbox.isClosed(senderId) && restoredInbox.memberId() === recipientId, 'closed policy survives IndexedDB restore');
   restoredInbox.free();
+  const freshId = crypto.getRandomValues(new Uint8Array(32));
+  const freshDeadline = Math.floor(Date.now() / 1000) + 300;
+  await rejects(() => senderInbox.initiateContact(freshId, freshDeadline, 64,
+    sessionKey, sessionContext, saveSender), 'blocked member cannot reopen');
+  await rejects(() => recipientInbox.initiateContact(freshId, freshDeadline, 64,
+    sessionKey, sessionContext, async () => false), 'fresh initiative requires durability');
+  assert(recipientInbox.isClosed(senderId), 'failed initiative keeps owned block');
+  const initiative = await recipientInbox.initiateContact(freshId, freshDeadline, 64,
+    sessionKey, sessionContext, saveRecipient);
+  assert(sameBytes((await store.read('recipient')).outbound[0], initiative), 'fresh initiative checkpoint includes encrypted outbox');
+  await rejects(() => recipientInbox.receive(queuedBeforeClose, sessionKey, sessionContext, saveRecipient), 'queued old data cannot answer new initiative');
+  const initiativeReceived = await senderInbox.receive(initiative, sessionKey, sessionContext, saveSender);
+  assert(initiativeReceived.kind === 'contactPolicyChanged', 'only blocker authenticated fresh initiative reopens');
+  initiativeReceived.free();
+  await rejects(() => senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender), 'new recipient must await actual intro');
+  const freshIntro = await recipientInbox.sendText('fresh introduction', sessionKey, sessionContext, saveRecipient);
+  await rejects(() => recipientInbox.sendBytes(binary, sessionKey, sessionContext, saveRecipient), 'fresh initiative still permits only one intro');
+  const freshIntroReceived = await senderInbox.receive(freshIntro, sessionKey, sessionContext, saveSender);
+  assert(freshIntroReceived.text === 'fresh introduction', 'new introduction received');
+  freshIntroReceived.free();
+  const freshAnswer = await senderInbox.sendBytes(binary, sessionKey, sessionContext, saveSender);
+  const freshAnswerReceived = await recipientInbox.receive(freshAnswer, sessionKey, sessionContext, saveRecipient);
+  assert(sameBytes(freshAnswerReceived.bytes, binary), 'authenticated answer resolves fresh initiative');
+  freshAnswerReceived.free();
   const leaseEndpoint = new BrowserOnionEndpoint(ONION, 80);
   const lease = JSON.parse(senderInbox.signPresence(leaseEndpoint, 1, Math.floor(Date.now() / 1000) + 60));
   assert(lease.memberId === senderId && lease.endpoint.host === ONION, 'typed presence binds owner and onion');
@@ -255,7 +280,7 @@ export async function runBrowserContract() {
   assert(disconnect.endpoint === null && disconnect.sequence === 2, 'typed disconnect');
   senderInbox.free(); recipientInbox.free(); sender.identity.free(); recipient.identity.free();
   sessionKey.fill(0); store.close();
-  passed.push('generated JS API + IndexedDB: mandatory bounded intro, authentic reply/closure, durable checkpoint/outbox and receive retry');
+  passed.push('generated JS API + IndexedDB: bounded intro/reply, owner-only fresh restart, stale traffic rejection and durable checkpoint/outbox');
 
   for (const port of [0, -1, 65536, 65537, 1.5, NaN, Infinity]) {
     throws(() => new BrowserOnionEndpoint(ONION, port), 'port bounds before JS integer coercion');

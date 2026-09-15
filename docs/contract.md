@@ -6,7 +6,7 @@ Messages are end-to-end encrypted between two or more participants. Groups must 
 
 The operator holds no content keys or plaintext message store. Local history and private credentials are encrypted. Passkey-based local key wrapping is a candidate; the passkey signing key is not itself a database encryption key. Device recovery and PRF support need validation.
 
-Admission requires external eligibility, member-root device authorization and cfrm's applicable rules capability. First contact requires an answer or permanent close, with an explicitly configured deadline. Established conversations reconnect privately. Clients must not be trusted to self-report counts honestly. Aggregate blind-permit issuance/redemption is implemented; private member-bound reciprocal accounting remains unfinished. See the [exact capability and evidence boundaries](browser-first.md).
+Admission requires external eligibility, member-root device authorization and cfrm's applicable rules capability. First contact requires an answer or a member-owned block, with an explicitly configured response deadline. A block applies to that member across their devices within the community. The blocking member may explicitly start a fresh contact; the blocked member cannot clear the block. An optional expiry permits a later fresh initiative, and expiry alone never revives queued messages. If both members blocked, both must consent. A fresh initiative starts another one-introduction limit with a new nonce. Established conversations reconnect privately. Clients must not be trusted to self-report counts honestly. Aggregate blind-permit issuance/redemption is implemented; private member-bound reciprocal accounting remains unfinished. See the [exact capability and evidence boundaries](browser-first.md).
 
 ## Network identity boundary
 
@@ -45,3 +45,5 @@ These are tests to implement, not reported passing checks:
 9. Reconnection does not replenish allowance or erase outstanding rules state.
 10. Telemetry and error transcripts contain no plaintext, account-pair mapping or private keys.
 11. No trusted server-side hosted client holds the user's decryption keys.
+12. A blocked member and their other devices cannot reopen; the blocking member can explicitly initiate a fresh contact, subject to any block the peer also owns.
+13. Old queued messages, device synchronization and expiry cannot turn an old introduction into an answer to a fresh one.

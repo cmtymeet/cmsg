@@ -10,7 +10,7 @@ been published as a new release or audited as a complete anonymous messenger.
 |---|---|---|
 | `MemberIdentity` | A community-scoped member root; independent device authorization; sealed root recovery | Eligibility, device revocation distribution, or protection from malicious application code |
 | `Member` | MLS encryption, authenticated participants, independent device leaves, bounded text/binary payloads, encrypted local state | First-contact policy when called directly |
-| `Inbox` | Recipient permit admission, permanent pair closure, signed sibling contact sync, optional strict first-contact transitions | Operator accounting proofs or fresh state after every replica is rolled back |
+| `Inbox` | Recipient permit admission, owner-controlled contact restrictions, signed sibling contact sync, strict first-contact transitions | Operator accounting proofs or fresh state after every replica is rolled back |
 | `BrowserInbox` | Strict first-contact flow and asynchronous checkpoint/outbox durability around the same Rust core | Browser background availability or trustworthy storage callbacks supplied by hostile JavaScript |
 | cfrm public board | Member-signed short-lived onion presence and a common full roster | A truthful omission-free roster from a malicious host or confidential public membership |
 | cfrm aggregate permits | Blinded allowance withdrawal and authoritative one-use redemption | Nontransferable credits or the full private reciprocal budget |
@@ -53,17 +53,28 @@ product defaults for these values or the operator's credit budget.
 3. The initiator may send one bounded introduction. The recipient independently
    rejects repeated introduction data even if the initiator bypasses its local
    guard.
-4. The recipient sends an actual answer or an encrypted permanent-close
+4. The recipient sends an actual answer or an encrypted owner-controlled close
    decision. A separately signed claim of answering does not open the strict
    data path by itself.
 5. A configured deadline closes the pair locally when the client next runs the
    deadline transition. A suspended browser cannot execute a timer or notify an
    offline peer. Local sender cancellation does not count as a peer response.
 
-Here, permanent closure means this member pair in the community, across threads
-and device keys. The tombstone must reach other devices through authenticated
-sync before those devices can enforce it. It is not an operator-wide behavioral
-ban. Temporary blocking remains a separate local option.
+A restriction belongs to its blocker and covers the pair across device keys.
+Only the blocker may initiate reopening while that restriction applies. The
+initial default has no expiry; applications can offer a blocker-selected expiry.
+Expiry permits a fresh contact request, never delivery of old buffered messages.
+No one-year duration or second-block escalation is hard-coded.
+
+Each owner signs a chained directive covering both parties, the previous control
+state, and any expiry. Fresh initiatives bind a new introduction identifier,
+policy and MLS group. When both parties have blocked, one cannot erase the
+other's restriction. Authenticated sibling synchronization retains the history;
+devices must receive it before they can enforce the latest decision. Conflicting
+owner histories fail closed. These directional changes are under validation and
+supersede the earlier pair-wide irreversible prototype.
+
+This is a private contact restriction, not an operator-wide behavioral ban.
 
 Strict introduction data currently requires exactly one distinct peer identity
 in the conversation. Generic `Member` still supports groups, including the
@@ -138,11 +149,14 @@ trust model: JavaScript in the same execution context can access Wasm memory.
 
 ## Evidence as of the current development work
 
-- cmsg `d9a96e9`: [108 native tests and a Wasm target check](https://crow.corbet.ch/repos/10/pipeline/36).
+- cmsg `985487b`: [113 native tests and a Wasm target check](https://crow.corbet.ch/repos/10/pipeline/38).
 - cfrm `5ce4996`: [21 Rust tests, 55 historical JavaScript tests, and portable permit Wasm checking](https://crow.corbet.ch/repos/9/pipeline/29).
-- Strict first-contact changes, the real Chromium contract and cross-repository
-  composition are being validated on their own exact source revisions. The
-  earlier successful runs do not validate later edits.
+- cmsg `4a5f826`: [actual Chromium/Wasm contract](https://crow.corbet.ch/repos/10/pipeline/44): identity and MLS cryptography, sealed recovery, tamper/replay rejection, durable IndexedDB checkpoint/outbox operations, and separately labeled scripted transport cases. Chrome152.0.7977.64; no unexpected tab requests. This run covers the earlier closure semantics.
+- cmsg `d7d8f77` with cfrm `5ce4996`: [four actual composition tests](https://crow.corbet.ch/repos/10/pipeline/42), including member/device signature verification and blind permits gating recipient MLS admission.
+- Directional blocker-controlled reopening/timers, cfrm browser bindings and live Tor hosting require their own passing evidence. Earlier runs do not validate later edits.
+
+GHA is the primary executor; Crow supplies the same core/browser scripts as a
+fallback. The results above were produced on Crow while GHA was unavailable.
 
 These checks establish their named behavior. They are not a proof of no leaks,
 a cryptographic audit, mobile-background testing, or browser Tor network evidence.

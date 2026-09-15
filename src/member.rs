@@ -61,6 +61,8 @@ pub enum Received {
     /// Emitted by the guarded Inbox first-contact protocol after verifying and
     /// durably applying a peer's encrypted permanent-close receipt.
     ContactClosed,
+    /// A signed owner block or fresh-initiative transition was durably applied.
+    ContactPolicyChanged,
 }
 impl fmt::Debug for Received {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,6 +71,7 @@ impl fmt::Debug for Received {
             Self::Bytes(_) => f.write_str("Bytes([redacted])"),
             Self::MembershipChanged => f.write_str("MembershipChanged"),
             Self::ContactClosed => f.write_str("ContactClosed"),
+            Self::ContactPolicyChanged => f.write_str("ContactPolicyChanged"),
         }
     }
 }
@@ -507,6 +510,20 @@ impl Member {
         self.send_payload(1, bytes)
     }
 
+    pub(crate) fn policy_group_id(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.group.as_ref().ok_or(Error::InvalidState)?.group_id().as_slice().to_vec())
+    }
+
+    pub(crate) fn send_policy_record(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        if bytes.len() > MAX_WIRE_BYTES / 2 { return Err(Error::InvalidMessage); }
+        self.send_payload(2, bytes)
+    }
+
+    pub(crate) fn remember_policy_text(&mut self, member_id: &str, text: &[u8]) -> Result<(), Error> {
+        self.history.push(TextMessage { member_id: member_id.to_owned(), text: validate_text(text)?.to_owned() });
+        Ok(())
+    }
+
     fn send_payload(&mut self, kind: u8, bytes: &[u8]) -> Result<Vec<u8>, Error> {
         self.member_id()?;
         let mut payload = Zeroizing::new(Vec::with_capacity(PAYLOAD_HEADER.len() + 1 + bytes.len()));
@@ -541,7 +558,7 @@ impl Member {
     pub fn receive_control(&mut self, wire: &[u8]) -> Result<(), Error> {
         match self.process_incoming(wire, true, &BTreeSet::new())? {
             Received::MembershipChanged => Ok(()),
-            Received::Text(_) | Received::Bytes(_) | Received::ContactClosed => Err(Error::InvalidMessage),
+            Received::Text(_) | Received::Bytes(_) | Received::ContactClosed | Received::ContactPolicyChanged => Err(Error::InvalidMessage),
         }
     }
 
@@ -613,6 +630,10 @@ impl Member {
                         text: validate_text(body)?.to_owned(),
                     }),
                     1 if body.len() <= MAX_DATA_BYTES => Received::Bytes(DataMessage {
+                        member_id,
+                        bytes: body.to_vec(),
+                    }),
+                    2 if body.len() <= MAX_WIRE_BYTES / 2 => Received::Bytes(DataMessage {
                         member_id,
                         bytes: body.to_vec(),
                     }),

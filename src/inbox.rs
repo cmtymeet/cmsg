@@ -6,7 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use zeroize::{Zeroize, Zeroizing};
 
+#[path = "inbox_policy.rs"]
+mod owner_policy;
+use owner_policy::DirectionalContact;
+
 const CLOSE_PAYLOAD_PREFIX: &[u8] = b"cmsg.contact-close.v1\0";
+const CONTACT_DATA_PREFIX: &[u8] = b"cmsg.contact-data.v2\0";
+const CONTACT_DIRECTIVE_PREFIX: &[u8] = b"cmsg.contact-directive.v1\0";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +25,8 @@ struct ContactSync {
     known: BTreeSet<String>,
     closed: BTreeSet<String>,
     introductions: BTreeMap<String, Introduction>,
+    directional: BTreeMap<String, DirectionalContact>,
+    archived: BTreeMap<String, Vec<Introduction>>,
     signature: Vec<u8>,
 }
 
@@ -27,7 +35,7 @@ impl ContactSync {
         serde_json::to_vec(&serde_json::json!([
             "cmsg.contact-sync.v1", self.community_id, self.owner_id,
             self.issued_at, self.device_public_key, self.credential, self.known,
-            self.closed, self.introductions,
+            self.closed, self.introductions, self.directional, self.archived,
         ])).map_err(|_| Error::InvalidMessage)
     }
 }
@@ -46,6 +54,8 @@ impl Drop for ContactSync {
         for (mut peer, _) in std::mem::take(&mut self.introductions) {
             peer.zeroize();
         }
+        for (mut peer, _) in std::mem::take(&mut self.directional) { peer.zeroize(); }
+        for (mut peer, _) in std::mem::take(&mut self.archived) { peer.zeroize(); }
     }
 }
 
@@ -105,9 +115,11 @@ struct InboxState {
     known: BTreeSet<String>,
     #[serde(default)]
     blocked: BTreeSet<String>,
-    /// Permanent identity-level tombstones. This set can only grow.
+    /// Unsigned local closures retained for legacy or expired-device recovery.
     closed: BTreeSet<String>,
     introductions: BTreeMap<String, Introduction>,
+    directional: BTreeMap<String, DirectionalContact>,
+    archived: BTreeMap<String, Vec<Introduction>>,
     pending: Option<Pending>,
 }
 
@@ -166,6 +178,8 @@ impl Drop for InboxState {
         for (mut peer, _) in std::mem::take(&mut self.introductions) {
             peer.zeroize();
         }
+        for (mut peer, _) in std::mem::take(&mut self.directional) { peer.zeroize(); }
+        for (mut peer, _) in std::mem::take(&mut self.archived) { peer.zeroize(); }
     }
 }
 impl Inbox {
@@ -184,6 +198,8 @@ impl Inbox {
                 blocked: BTreeSet::new(),
                 closed: BTreeSet::new(),
                 introductions: BTreeMap::new(),
+                directional: BTreeMap::new(),
+                archived: BTreeMap::new(),
                 pending: None,
             },
         })
@@ -392,6 +408,9 @@ impl Inbox {
         context: &[u8],
         mut persist: impl FnMut(&[u8]) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        if self.state.root_authorized {
+            return self.block_member_until(member_id, None, recipient, key, context, persist);
+        }
         self.check_binding(recipient)?;
         if !crate::admission::valid_member_id(member_id)
             || member_id == self.state.recipient_id
@@ -410,6 +429,7 @@ impl Inbox {
 
     pub fn is_closed(&self, member_id: &str) -> bool {
         self.state.closed.contains(member_id)
+            || self.state.directional.get(member_id).is_some_and(DirectionalContact::blocked)
     }
 
     /// Register the shared, unpredictable first-introduction ID after peer
@@ -526,7 +546,7 @@ impl Inbox {
             if intro.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Recipient) {
                 intro.decision = Some(ContactResolutionKind::ClosedForever);
             }
-            changed.state.closed.insert(peer.clone());
+            changed.record_local_close(peer, member)?;
         }
         if changed.state.pending.as_ref().is_some_and(|p| changed.is_closed(&p.inviter)) {
             changed.state.pending = None;
@@ -578,7 +598,12 @@ impl Inbox {
             return Err(Error::Admission);
         }
         let mut candidate = member.staged_copy(key, context)?;
-        let wire = if text { candidate.send(bytes)? } else { candidate.send_bytes(bytes)? };
+        let mut record = Zeroizing::new(CONTACT_DATA_PREFIX.to_vec());
+        record.extend_from_slice(&intro.id);
+        record.push(u8::from(text));
+        record.extend_from_slice(bytes);
+        let wire = candidate.send_policy_record(&record)?;
+        if text { candidate.remember_policy_text(&candidate.member_id()?, bytes)?; }
         let mut changed = self.duplicate();
         let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
         let state = entry.strict.as_mut().ok_or(Error::InvalidState)?;
@@ -611,28 +636,12 @@ impl Inbox {
         // A terminal signed close receipt may still settle the original peer
         // obligation after local cancellation. No application data is exposed.
         excluded.remove(&peer);
-        let mut received = candidate.receive_excluding(wire, &excluded)?;
-        let mut peer_closed = false;
+        let raw = candidate.receive_excluding(wire, &excluded)?;
         let mut changed = self.duplicate();
-        let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
-        let state = entry.strict.as_mut().ok_or(Error::InvalidState)?;
-        let payload = match &received {
-            Received::Text(message) => Some((&message.member_id, message.text.as_bytes())),
-            Received::Bytes(message) if message.bytes.starts_with(CLOSE_PAYLOAD_PREFIX) => {
-                let receipt: ContactResolution = serde_json::from_slice(&message.bytes[CLOSE_PAYLOAD_PREFIX.len()..])
-                    .map_err(|_| Error::InvalidMessage)?;
-                if receipt.responder_id != message.member_id || receipt.kind != ContactResolutionKind::ClosedForever {
-                    return Err(Error::Admission);
-                }
-                candidate.verify_contact_resolution(&receipt, &peer, &entry.id)?;
-                entry.decision = Some(ContactResolutionKind::ClosedForever);
-                entry.outbound_receipt = None;
-                entry.inbound_receipt = Some(message.bytes[CLOSE_PAYLOAD_PREFIX.len()..].to_vec());
-                changed.state.closed.insert(peer.clone());
-                peer_closed = true;
-                None
+        let received = match &raw {
+            Received::Bytes(message) if message.member_id == peer && message.bytes.starts_with(CONTACT_DIRECTIVE_PREFIX) => {
+                changed.apply_control_record(&peer, &message.bytes[CONTACT_DIRECTIVE_PREFIX.len()..], &candidate)?
             }
-            Received::Bytes(message) => Some((&message.member_id, message.bytes.as_slice())),
             Received::MembershipChanged => {
                 if peer_excluded {
                     let before: BTreeSet<_> = member.participants()?.iter()
@@ -645,26 +654,35 @@ impl Inbox {
                     if before != after { return Err(Error::Admission); }
                 }
                 if self.contact_peer(&candidate)? != peer { return Err(Error::Admission); }
-                None
+                Received::MembershipChanged
             }
-            Received::ContactClosed => return Err(Error::InvalidMessage),
-        };
-        if let Some((sender, bytes)) = payload {
-            if peer_excluded || sender != &peer || bytes.is_empty() { return Err(Error::Admission); }
-            if entry.decision.is_none() {
-                if bytes.len() > state.policy.max_intro_bytes || match state.role {
-                    FirstContactRole::Recipient => state.received,
-                    FirstContactRole::Initiator => !state.sent,
-                } {
+            Received::Bytes(message) if message.bytes.starts_with(CONTACT_DATA_PREFIX) => {
+                let record = &message.bytes[CONTACT_DATA_PREFIX.len()..];
+                if peer_excluded || message.member_id != peer || record.len() <= 33
+                    || record[..32] != intro.id || record[32] > 1 || record.len() - 33 > crate::MAX_DATA_BYTES {
                     return Err(Error::Admission);
                 }
-                state.received = true;
-                if state.role == FirstContactRole::Initiator {
-                    entry.decision = Some(ContactResolutionKind::Answered);
+                let bytes = &record[33..];
+                let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
+                let state = entry.strict.as_mut().ok_or(Error::InvalidState)?;
+                if entry.decision.is_none() {
+                    if bytes.len() > state.policy.max_intro_bytes || match state.role {
+                        FirstContactRole::Recipient => state.received,
+                        FirstContactRole::Initiator => !state.sent,
+                    } { return Err(Error::Admission); }
+                    state.received = true;
+                    if state.role == FirstContactRole::Initiator { entry.decision = Some(ContactResolutionKind::Answered); }
+                }
+                if record[32] == 1 {
+                    let text = crate::validate_text(bytes)?.to_owned();
+                    candidate.remember_policy_text(&peer, bytes)?;
+                    Received::Text(crate::TextMessage { member_id: peer.clone(), text })
+                } else {
+                    Received::Bytes(crate::DataMessage { member_id: peer.clone(), bytes: bytes.to_vec() })
                 }
             }
-        }
-        if peer_closed { received = Received::ContactClosed; }
+            _ => return Err(Error::InvalidMessage),
+        };
         persist(&changed.seal(&candidate, key, context)?)?;
         *member = candidate;
         *self = changed;
@@ -677,41 +695,7 @@ impl Inbox {
         &mut self, member: &mut Member, key: &[u8; 32], context: &[u8],
         mut persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
     ) -> Result<Vec<u8>, Error> {
-        let peer = self.contact_peer(member)?;
-        let intro = self.state.introductions.get(&peer).ok_or(Error::InvalidState)?;
-        let strict = intro.strict.as_ref().ok_or(Error::InvalidState)?;
-        if strict.close_sent { return Err(Error::Admission); }
-        let mut candidate = member.staged_copy(key, context)?;
-        let encoded = if let Some(stored) = &intro.outbound_receipt {
-            let receipt: ContactResolution = serde_json::from_slice(stored).map_err(|_| Error::InvalidStore)?;
-            if receipt.kind == ContactResolutionKind::ClosedForever {
-                receipt.verify_device_signature(&candidate, candidate.authorization_time()?)?;
-                stored.clone()
-            } else {
-                serde_json::to_vec(&candidate.sign_contact_resolution(&peer, &intro.id, ContactResolutionKind::ClosedForever)?)
-                    .map_err(|_| Error::InvalidMessage)?
-            }
-        } else {
-            serde_json::to_vec(&candidate.sign_contact_resolution(&peer, &intro.id, ContactResolutionKind::ClosedForever)?)
-                .map_err(|_| Error::InvalidMessage)?
-        };
-        let mut payload = Zeroizing::new(CLOSE_PAYLOAD_PREFIX.to_vec());
-        payload.extend_from_slice(&encoded);
-        let wire = candidate.send_bytes(&payload)?;
-        let mut changed = self.duplicate();
-        let entry = changed.state.introductions.get_mut(&peer).ok_or(Error::InvalidState)?;
-        let strict = entry.strict.as_mut().ok_or(Error::InvalidState)?;
-        strict.close_sent = true;
-        if strict.role == FirstContactRole::Recipient {
-            entry.decision = Some(ContactResolutionKind::ClosedForever);
-        }
-        entry.outbound_receipt = Some(encoded);
-        changed.state.closed.insert(peer.clone());
-        if changed.state.pending.as_ref().is_some_and(|p| p.inviter == peer) { changed.state.pending = None; }
-        persist(&changed.seal(&candidate, key, context)?, &wire)?;
-        *member = candidate;
-        *self = changed;
-        Ok(wire)
+        self.close_contact_until(member, None, key, context, &mut persist)
     }
 
     fn contact_peer(&self, member: &Member) -> Result<String, Error> {
@@ -725,8 +709,10 @@ impl Inbox {
     /// A local sender cancellation or local timeout never counts as a peer
     /// response and never earns a replacement introduction allowance.
     pub fn awaiting_peer_resolution(&self, peer_id: &str) -> bool {
-        self.state.introductions.get(peer_id).is_some_and(|intro| intro.decision.is_none()
-            && intro.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator && s.sent))
+        self.state.introductions.get(peer_id).into_iter()
+            .chain(self.state.archived.get(peer_id).into_iter().flatten())
+            .any(|intro| intro.decision.is_none()
+                && intro.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator && s.sent))
     }
 
     /// Commit a local decision and its exact signed outbound receipt atomically.
@@ -768,7 +754,7 @@ impl Inbox {
         entry.decision = Some(kind);
         entry.outbound_receipt = Some(encoded.clone());
         if kind == ContactResolutionKind::ClosedForever {
-            changed.state.closed.insert(peer_id.to_owned());
+            changed.record_local_close(peer_id, member)?;
             if changed.state.pending.as_ref().is_some_and(|pending| pending.inviter == peer_id) {
                 changed.state.pending = None;
             }
@@ -821,7 +807,7 @@ impl Inbox {
             entry.outbound_receipt = None;
         }
         if receipt.kind == ContactResolutionKind::ClosedForever {
-            changed.state.closed.insert(peer_id.clone());
+            changed.record_peer_close(peer_id);
             if changed.state.pending.as_ref().is_some_and(|pending| &pending.inviter == peer_id) {
                 changed.state.pending = None;
             }
@@ -903,6 +889,8 @@ impl Inbox {
             known: self.state.known.clone(),
             closed: self.state.closed.clone(),
             introductions: self.state.introductions.clone(),
+            directional: self.state.directional.clone(),
+            archived: self.state.archived.clone(),
             signature: Vec::new(),
         };
         sync.signature = member.signer.sign(&Zeroizing::new(sync.signing_bytes()?))
@@ -953,12 +941,50 @@ impl Inbox {
             community_id: sync.community_id.clone(), recipient_id: sync.owner_id.clone(),
             root_authorized: true, known: sync.known.clone(), blocked: BTreeSet::new(),
             closed: sync.closed.clone(), introductions: sync.introductions.clone(), pending: None,
+            directional: sync.directional.clone(), archived: sync.archived.clone(),
         }};
         incoming_state.validate_state(member)?;
         let mut changed = self.duplicate();
         changed.state.known.extend(sync.known.iter().cloned());
         changed.state.closed.extend(sync.closed.iter().cloned());
+        for (peer, incoming) in &sync.directional {
+            changed.state.directional.entry(peer.clone()).or_default().merge(incoming)?;
+        }
+        for (peer, incoming) in &sync.archived {
+            let archive = changed.state.archived.entry(peer.clone()).or_default();
+            for record in incoming {
+                if let Some(existing) = archive.iter_mut().find(|i| i.id == record.id) {
+                    if existing.decision.is_none() || record.decision == Some(ContactResolutionKind::ClosedForever) {
+                        *existing = record.clone();
+                    }
+                } else { archive.push(record.clone()); }
+            }
+        }
         for (peer, incoming) in &sync.introductions {
+            if changed.state.introductions.get(peer).is_some_and(|i| i.id != incoming.id) {
+                let selected = changed.state.directional.get(peer).map(DirectionalContact::selected_nonce).transpose();
+                match selected {
+                    Ok(Some(Some(nonce))) if nonce == incoming.id => {
+                        if let Some(old) = changed.state.introductions.insert(peer.clone(), incoming.clone()) {
+                            let archive = changed.state.archived.entry(peer.clone()).or_default();
+                            if !archive.iter().any(|i| i.id == old.id) { archive.push(old); }
+                        }
+                    }
+                    Ok(Some(Some(nonce))) if changed.state.introductions.get(peer).is_some_and(|i| i.id == nonce) => (),
+                    _ => {
+                        changed.mark_contact_conflict(peer);
+                    }
+                }
+                continue;
+            }
+            if changed.state.introductions.get(peer).is_some_and(|existing| match (&existing.strict, &incoming.strict) {
+                (Some(a), Some(b)) => a.role != b.role || a.policy != b.policy || a.initial_writer_key != b.initial_writer_key,
+                (None, None) => false,
+                _ => true,
+            }) {
+                changed.mark_contact_conflict(peer);
+                continue;
+            }
             if let Some(existing) = changed.state.introductions.get_mut(peer) {
                 if existing.id != incoming.id {
                     return Err(Error::InvalidState);
@@ -1004,6 +1030,11 @@ impl Inbox {
                 changed.state.introductions.insert(peer.clone(), incoming.clone());
             }
         }
+        for (peer, archive) in &mut changed.state.archived {
+            if let Some(current) = changed.state.introductions.get(peer) {
+                archive.retain(|old| old.id != current.id);
+            }
+        }
         if changed.state.pending.as_ref().is_some_and(|p| changed.is_closed(&p.inviter)) {
             changed.state.pending = None;
         }
@@ -1014,7 +1045,9 @@ impl Inbox {
     }
 
     fn excluded(&self) -> BTreeSet<String> {
-        self.state.blocked.union(&self.state.closed).cloned().collect()
+        self.state.blocked.union(&self.state.closed).cloned()
+            .chain(self.state.directional.iter().filter(|(_, state)| state.blocked()).map(|(peer, _)| peer.clone()))
+            .collect()
     }
 
     /// Enforce local contact exclusions before encrypting any new text. A group
@@ -1044,7 +1077,7 @@ impl Inbox {
 
     fn check_unresolved(&self, member: &Member) -> Result<(), Error> {
         if member.participants()?.iter().any(|peer| self.state.introductions.get(&peer.member_id)
-            .is_some_and(|intro| intro.strict.is_some() && intro.decision.is_none())) {
+            .is_some_and(|intro| intro.strict.is_some())) {
             return Err(Error::Admission);
         }
         Ok(())
@@ -1088,9 +1121,30 @@ impl Inbox {
         {
             return Err(Error::InvalidStore);
         }
-        for (peer, introduction) in &self.state.introductions {
+        for (peer, history) in &self.state.directional {
+            if !crate::admission::valid_member_id(peer) || peer == &self.state.recipient_id { return Err(Error::InvalidStore); }
+            history.validate(&self.state.recipient_id, peer, member)?;
+            if !self.is_closed(peer) {
+                if let Some(nonce) = history.selected_nonce()? {
+                    if !self.state.introductions.get(peer).is_some_and(|i| i.id == nonce && i.strict.is_some()) {
+                        return Err(Error::InvalidStore);
+                    }
+                }
+            }
+        }
+        for (peer, archive) in &self.state.archived {
+            let mut nonces = BTreeSet::new();
+            for introduction in archive {
+                if !nonces.insert(introduction.id)
+                    || self.state.introductions.get(peer).is_some_and(|current| current.id == introduction.id) {
+                    return Err(Error::InvalidStore);
+                }
+            }
+        }
+        for (peer, introduction, current) in self.state.introductions.iter().map(|(p, i)| (p, i, true))
+            .chain(self.state.archived.iter().flat_map(|(p, items)| items.iter().map(move |i| (p, i, false)))) {
             if !crate::admission::valid_member_id(peer) || peer == &self.state.recipient_id
-                || (introduction.decision == Some(ContactResolutionKind::ClosedForever) && !self.is_closed(peer))
+                || (current && introduction.decision == Some(ContactResolutionKind::ClosedForever) && !self.is_closed(peer))
             {
                 return Err(Error::InvalidStore);
             }
@@ -1109,7 +1163,7 @@ impl Inbox {
                 }
                 let receipt: ContactResolution = serde_json::from_slice(bytes).map_err(|_| Error::InvalidStore)?;
                 let sender_cancellation = introduction.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Initiator)
-                    && self.is_closed(peer) && receipt.kind == ContactResolutionKind::ClosedForever;
+                    && (!current || self.is_closed(peer)) && receipt.kind == ContactResolutionKind::ClosedForever;
                 if receipt.responder_id != self.state.recipient_id || &receipt.peer_id != peer
                     || receipt.introduction_id != introduction.id
                     || (Some(receipt.kind) != introduction.decision && !sender_cancellation)

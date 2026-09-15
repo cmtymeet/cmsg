@@ -80,14 +80,25 @@ authenticated peer. Omitting it fails closed. The application supplies an
 absolute response deadline and introduction byte limit; cmsg invents neither.
 The initiator can send one introduction until an authenticated answer arrives.
 The recipient can answer after receiving it or call `closeContact` to commit and
-send an encrypted permanent closure. The received `kind` is `contactClosed`.
+send an encrypted member-owned block. The received `kind` is `contactClosed`.
+Its default lasts until the blocking member explicitly starts a new contact.
+The blocked member cannot clear it. `closeContactUntil(until, ...)` takes an
+optional absolute expiry; expiry permits a fresh initiative but does not revive
+old messages or answer an old introduction.
 `sendBytes`, `sendText` and `receive` apply deadlines durably before further
 traffic; hosts also call `applyDeadlines` when updating idle session state.
 This policy currently supports pairs. Multi-member MLS remains a low-level
 `BrowserMember` capability until a group first-contact policy is defined.
 
-`closeForever`, `setBlocked`, `cancelPending` and `mergeContactSync` also await
-durability. A permanent closure cannot be undone by clearing a temporary block.
+`blockMemberUntil(peer, until, ...)` saves a member-owned block locally for
+private device sync. `setBlocked`, `cancelPending` and `mergeContactSync` also
+await durability. Clearing a temporary flag cannot clear a member-owned block.
+`initiateContact(freshNonce, responseDeadline, maxIntroBytes, ...)` sends a signed
+encrypted fresh initiative and starts another one-introduction gate. Only the
+member who blocked can initiate while their block remains active. If both
+members blocked, the other must explicitly `consentContact` too. Receiving
+either policy transition reports `contactPolicyChanged`. Old queued messages
+are bound to their old introduction and cannot answer the new one.
 `exportContactSync` returns private contact data: carry it only inside an
 encrypted channel authenticated to another root-authorized device of the same
 member. `renewDeviceAdmission` saves its new credential and outbound MLS commit
