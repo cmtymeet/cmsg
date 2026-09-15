@@ -528,11 +528,12 @@ impl BrowserInbox {
         key: &[u8], context: &[u8], persist: Function, redeem: Function,
     ) -> Result<String, JsValue> {
         let key = wrapping_key(key)?;
+        let recipient_redemption = recipient_redemption.map(Zeroizing::new);
         let mut candidate = self.duplicate(&key, context)?;
         let mut checkpoint = None;
         let mut request = None;
         let result = candidate.inbox.accept(
-            &mut candidate.member, welcome, recipient_redemption.as_deref(), &key, context,
+            &mut candidate.member, welcome, recipient_redemption.as_ref().map(|bytes| bytes.as_slice()), &key, context,
             |bytes| { checkpoint = Some(bytes.to_vec()); Ok(()) },
             |bytes| { request = Some(Zeroizing::new(bytes.to_vec())); Redemption::Indeterminate },
         ).map_err(js_error)?;

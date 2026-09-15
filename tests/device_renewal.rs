@@ -49,3 +49,56 @@ fn expired_device_authorization_renews_with_same_root_and_key_without_rotating_i
     assert!(matches!(bob.receive(&alice.send(b"root renewed").unwrap()).unwrap(), Received::Text(message)
         if message.member_id == alice_root.member_id() && message.text == "root renewed"));
 }
+
+#[test]
+fn delayed_expired_close_is_refreshed_after_joint_renewal_without_reopening_contact() {
+    use cmsg::{ContactResolution, FirstContactPolicy, FirstContactRole as Role, Inbox};
+    const KEY: [u8; 32] = [56; 32];
+    const CONTEXT: &[u8] = b"synthetic-delayed-close";
+    const NONCE: [u8; 32] = [45; 32];
+    let time = Arc::new(Time(AtomicU64::new(100)));
+    let a_root = MemberIdentity::new("synthetic-community").unwrap();
+    let b_root = MemberIdentity::new("synthetic-community").unwrap();
+    let mut a = device(&a_root, &time, 1000);
+    let mut b = device(&b_root, &time, 200);
+    a.create_group().unwrap();
+    b.join(&a.add(&b.key_package().unwrap()).unwrap().welcome).unwrap();
+    let mut ai = Inbox::new(&a).unwrap();
+    let mut bi = Inbox::new(&b).unwrap();
+    let policy = FirstContactPolicy { response_deadline: 600, max_intro_bytes: 128 };
+    ai.begin_first_contact(b_root.member_id(), &NONCE, Role::Initiator, policy, &a, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    bi.begin_first_contact(a_root.member_id(), &NONCE, Role::Recipient, policy, &b, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let first = ai.send_contact(&mut a, b"introduction", &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    bi.receive_contact(&mut b, &first, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let delayed = bi.close_contact(&mut b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    let old_receipt = bi.outbound_resolution_receipt(a_root.member_id()).unwrap().to_vec();
+    assert!(bi.refresh_outbound_resolution(a_root.member_id(), &b, &KEY, CONTEXT,
+        |_| panic!("still-current receipt cannot reset close transmission")).is_err());
+    time.0.store(700, Ordering::Relaxed);
+    assert!(ai.receive_contact(&mut a, &delayed, &KEY, CONTEXT, |_| Ok(())).is_err());
+    assert!(ai.is_closed(b_root.member_id()));
+    assert!(ai.awaiting_peer_resolution(b_root.member_id()), "local timeout is not a peer response");
+    let mut grant = common::grant(&b.chat_public_key(), 1);
+    grant.member_id = b_root.member_id().to_owned();
+    common::sign(&mut grant);
+    let authorization = b_root.authorize_device(&b.chat_public_key(), 700, 900).unwrap();
+    let renewal = b.renew_device_admission(grant, authorization, |_, _| Ok(())).unwrap();
+    assert!(matches!(ai.receive_contact(&mut a, &renewal, &KEY, CONTEXT, |_| Ok(())).unwrap(), Received::MembershipChanged));
+    let old: ContactResolution = serde_json::from_slice(&old_receipt).unwrap();
+    assert!(a.verify_contact_resolution(&old, b_root.member_id(), &NONCE).is_err());
+    assert!(bi.refresh_outbound_resolution(a_root.member_id(), &b, &KEY, CONTEXT, |_| Err(Error::InvalidStore)).is_err());
+    assert_eq!(bi.outbound_resolution_receipt(a_root.member_id()).unwrap(), old_receipt);
+    let refreshed = bi.refresh_outbound_resolution(a_root.member_id(), &b, &KEY, CONTEXT, |_| Ok(())).unwrap();
+    let new: ContactResolution = serde_json::from_slice(&refreshed).unwrap();
+    assert_eq!(new.kind, old.kind);
+    assert_eq!(new.introduction_id, old.introduction_id);
+    assert_eq!(new.responder_id, old.responder_id);
+    assert_eq!(new.peer_id, old.peer_id);
+    a.verify_contact_resolution(&new, b_root.member_id(), &NONCE).unwrap();
+    assert!(bi.is_closed(a_root.member_id()));
+    let retransmission = bi.close_contact(&mut b, &KEY, CONTEXT, |_, _| Ok(())).unwrap();
+    assert!(matches!(ai.receive_contact(&mut a, &retransmission, &KEY, CONTEXT, |_| Ok(())).unwrap(), Received::ContactClosed));
+    assert!(!ai.awaiting_peer_resolution(b_root.member_id()));
+    assert_eq!(ai.inbound_resolution_receipt(b_root.member_id()).unwrap(), refreshed);
+    assert!(bi.close_contact(&mut b, &KEY, CONTEXT, |_, _| panic!("one transmission per refreshed decision")).is_err());
+}
