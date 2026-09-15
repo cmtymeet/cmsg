@@ -51,7 +51,8 @@ After the onion-client patch, `tor-js-onion-stream.patch` plus the
 `onion_stream.rs` overlay expose actual Arti `DataStream` bytes. Copy the overlay
 to `crates/tor-js-wasm/src/onion_stream.rs` in the isolated pinned checkout.
 The client, stream and service patches applied to the exact source archives in
-Crow run 45 at cmsg `755d83b1a`. Compilation and a network test remain pending.
+Crow run 45 at cmsg `755d83b1a`. Its full service stage also passed the Wasm
+compilation check. Generated TorJS bindings and a network test remain pending.
 The stock dependency is not enabled by the cmsg production adapter.
 
 `connectOnion(host, port, deadlineMs)` accepts only canonical checksum-valid
@@ -76,7 +77,7 @@ local echo is accepted as evidence that a browser onion service is reachable.
 The `service` source stage now includes an in-memory state backend, target
 gates for filesystem replay code, one-shot ephemeral introduction ownership,
 and a bounded Arti service/stream API. Patch application is verified as above;
-the new browser runtime behavior still requires compilation and network tests.
+the new browser runtime behavior still requires generated-binding and network tests.
 The memory store keeps at most 16 MiB of service metadata per instance and
 rejects replacement atomically when full. It exports neither raw directories
 nor state recovery. It rejects reacquisition even after all handles drop.
@@ -153,3 +154,38 @@ This stage tests real Tor cryptography, circuit construction and stream
 interoperability in an isolated network. An observer controlling every test
 relay is inherent to the fixture, so the result is functional evidence and
 cannot establish protection against that observer or public-network capacity.
+
+### Runtime fixture invocation
+
+The root CI workflow owns source staging and matching binding-generator builds.
+After applying `test-network`, call:
+
+```sh
+bash .ci/tor-runtime-build.sh "$TORJS_CHECKOUT" "$TOR_RUNTIME_ARTIFACT"
+python3 browser/upstream/runtime-fixture.py
+```
+
+The build requires explicit `CARGO_TARGET_DIR`, `TOR_BINDGEN_BINARY` matching
+the upstream lock's wasm-bindgen 0.2.122, and `CMSG_BINDGEN_BINARY` matching
+cmsg's 0.2.128. It runs locked builds, installs only project-local npm packages
+with lifecycle scripts disabled, and builds the upstream TypeScript/declarations.
+Only the stock README gzip-size assertion is omitted in a recorded copy of the
+build script; the resulting package version includes `cmsg-fixture` and the cmsg
+commit. Nothing is published. Artifact hashes and dependency locks are retained.
+
+The fixture requires `CHUTNEY_SOURCE` at official commit
+`6cc158868d722e652975cb4efd5b278d95ff2fbb`, with that source's Python dependencies
+available in the isolated CI environment; `TOR_BIN`, `TOR_GENCERT_BIN`,
+`TOR_GATEWAY_BIN`, `TOR_NATIVE_PEER_BIN`, `TORJS_DIST`, `BROWSER_BIN` and
+`TOR_RUNTIME_ARTIFACT` must be explicit paths. It adds one native client to the
+26-relay network. Generated authorities, KPS keys and browser profiles are
+temporary; shutdown confirms the owned processes exit before deleting state.
+
+The contract uses the actual generated TorJS APIs and cmsg framing. Two browser
+clients publish different onions and exchange byte frames. A separate native
+cmsg process then connects through its test Tor SOCKS endpoint to a browser-owned
+onion, exchanges MLS key-package/welcome data over that route, and authenticates
+binary cmsg ciphertext in both directions. This checks the generic core and
+native framing; the strict contact-policy API has its separate browser contract.
+The browser's localhost control request only launches the synthetic native test
+participant. It is fixture orchestration, not an application transport endpoint.

@@ -13,6 +13,9 @@ variables:
   TOR_STAGE: {default: "service"}
   WASM_LINKER: {default: ""}
   BROWSER_BIN: {default: ""}
+  RUN_RUNTIME: {default: "0"}
+  TOR_TOOLS_RECEIPT: {default: ""}
+  TOR_TOOLS_RECEIPT_SHA256: {default: ""}
   OPENSSL_INCLUDE_DIR: {default: ""}
   OPENSSL_LIB_DIR: {default: ""}
 steps:

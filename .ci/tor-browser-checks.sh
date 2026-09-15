@@ -39,6 +39,46 @@ if test "$TOR_STAGE" = service || test "$TOR_STAGE" = test-network; then
   timeout 1800 cargo test --locked --manifest-path "$arti_manifest" \
     -p tor-persist --features state-dir state_dir_wasm_tests -- --test-threads=2 || result=$?
 fi
+if test "${RUN_RUNTIME:-0}" = 1 && test "$result" = 0; then
+  test "$TOR_STAGE" = test-network
+  test -x "$WASM_LINKER"
+  test -x "$BROWSER_BIN"
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$WASM_LINKER"
+  export BROWSER_BIN
+  # Both helpers are project dependencies; neither is installed on the host.
+  if ! test -f .ci/tor-bindgen/Cargo.lock; then
+    cargo generate-lockfile --manifest-path .ci/tor-bindgen/Cargo.toml
+  fi
+  cp .ci/tor-bindgen/Cargo.lock "$artifact_dir/tor-bindgen-Cargo.lock"
+  timeout 1200 cargo build --locked --manifest-path .ci/tor-bindgen/Cargo.toml
+  timeout 1200 cargo build --locked --manifest-path .ci/browser-bindgen/Cargo.toml
+  export TOR_BINDGEN_BINARY="$CARGO_TARGET_DIR/debug/cmsg-tor-test-bindgen"
+  export CMSG_BINDGEN_BINARY="$CARGO_TARGET_DIR/debug/cmsg-browser-test-bindgen"
+  bash .ci/tor-runtime-build.sh "$scratch/source/tor-js" "$artifact_dir/runtime"
+  printf '%s  %s\n' "$TOR_TOOLS_RECEIPT_SHA256" "$TOR_TOOLS_RECEIPT" | sha256sum --check --strict
+  cp "$TOR_TOOLS_RECEIPT" "$artifact_dir/runtime/tools.json"
+  mapfile -t fixture_tools < <(python3 - "$TOR_TOOLS_RECEIPT" <<'PY'
+import json,sys
+with open(sys.argv[1]) as stream:
+    tools=json.load(stream)
+for key in ("torBin", "torGencert", "python", "chutney"):
+    value=tools[key]
+    if not isinstance(value,str) or not value.startswith('/') or '\n' in value:
+        raise SystemExit('invalid fixture tool path')
+    print(value)
+PY
+  )
+  test "${#fixture_tools[@]}" = 4
+  export TOR_BIN="${fixture_tools[0]}" TOR_GENCERT_BIN="${fixture_tools[1]}"
+  export CHUTNEY_SOURCE="${fixture_tools[3]}"
+  export TOR_GATEWAY_BIN="$CARGO_TARGET_DIR/debug/tor-js-gateway"
+  export TOR_NATIVE_PEER_BIN="$CARGO_TARGET_DIR/debug/examples/tor_browser_peer"
+  export TORJS_DIST="$scratch/source/tor-js/dist"
+  export TOR_RUNTIME_ARTIFACT="$artifact_dir/runtime"
+  timeout --kill-after=15 1500 "${fixture_tools[2]}" browser/upstream/runtime-fixture.py \
+    2>&1 | tee "$artifact_dir/runtime/network.log" || result=$?
+  (cd "$artifact_dir/runtime" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+fi
 (cd "$artifact_dir" && sha256sum source-application.json *Cargo.lock > SHA256SUMS)
 printf 'Patched upstream validation status: %s\n' "$result"
 exit "$result"

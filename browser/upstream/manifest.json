@@ -8,12 +8,12 @@
     "rawStreamStage": {
       "patch": "tor-js-onion-stream.patch",
       "overlay": { "onion_stream.rs": "crates/tor-js-wasm/src/onion_stream.rs" },
-      "status": "source application verified Crow run45 at cmsg755d83b1a; build/browser/native Tor round-trip unverified"
+      "status": "source application and full service Wasm check verified Crow run45 at cmsg755d83b1a; generated bindings/browser/native Tor round-trip unverified"
     },
     "serviceStage": {
       "patch": "tor-js-onion-service.patch",
       "overlay": { "onion_service.rs": "crates/tor-js-wasm/src/onion_service.rs" },
-      "status": "source application verified Crow run45 at cmsg755d83b1a; build/browser/native Tor round-trip unverified"
+      "status": "source application and full service Wasm check verified Crow run45 at cmsg755d83b1a; generated bindings/browser/native Tor round-trip unverified"
     },
     "testNetworkStage": {
       "patch": "tor-js-test-network.patch",
@@ -32,7 +32,7 @@
   },
   "evidence": {
     "stockOnionClientFeature": false,
-    "patchedOnionClientBuild": "unverified",
+    "patchedOnionClientBuild": "full service Wasm cargo check passed Crow run45 at cmsg755d83b1a; generated artifact pending",
     "browserOnionServiceHosting": "unverified"
   }
 }
