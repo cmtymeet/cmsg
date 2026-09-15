@@ -155,6 +155,9 @@ This stage also applies `arti-service-diagnostics.patch` and, after copying the
 service overlay, `tor-js-service-diagnostics.patch`. Readiness failures retain
 only fixed labels for the introduction-point manager and descriptor publisher,
 plus the latest introduction-circuit error category across the fixture runtime.
+The test stage also records static publisher scheduling, period-count, upload
+step and per-attempt error categories. Runtime-wide labels describe the latest
+observed event; they do not identify a particular service or peer.
 These labels contain no error payloads, keys, onion addresses or paths. They
 do not relax readiness or deadlines and are absent from the production service
 stage.
@@ -173,7 +176,31 @@ uses `chutney.arti.config.tor_config(network)["override_net_params"]` from the
 pinned source. Its 20-second voting interval derives an eight-minute onion
 directory period; leaving Arti at the public-network 1440-minute default is
 incompatible. The public signed consensus and this derivation are retained
-before browser execution, including on later failure. This correction still
+before browser execution, including on later failure. Crow run 67 confirmed
+the eight-minute override and 26 HSDirs, but the browser service still timed
+out with its publisher bootstrapping. That run's startup consensus contained
+neither shared-random generation.
+
+The fixture now waits for a currently valid consensus in the native Tor client's
+accepted cache containing both canonical 32-byte shared-random values. It
+rejects duplicate fields and bounds each `num-reveals` to the four fixture
+authorities; that count is not a signature quorum. Native Tor validates the
+consensus signatures. Freshness is recorded separately: a consensus can remain
+valid after its `fresh-until` time while the client awaits an update. The fixture
+also checks that the signed values cover
+Arti's current and an adjacent publication period. It retains the public
+consensus and a bounded `shared-random-readiness.json` receipt, even on timeout.
+
+In the pinned C Tor 0.4.9.12 source, `shared_random_state.c:164` selects 12
+commit and 12 reveal rounds; `new_protocol_run()` at line 770 rotates values
+only at the reveal-to-commit transition. `shared_random.c:766` requires
+authority agreement before including a value in the consensus. An incomplete
+startup cycle can therefore leave values absent. Warmup allows three complete
+cycle durations plus four voting rounds (1520 seconds with the existing
+20-second interval), covering an initial partial cycle and two full cycles.
+The outer fixture supervisor allows 3000 seconds for this warmup, existing
+bootstrap/driver limits and cleanup. Tor voting settings and the browser's
+60-second service readiness deadline remain unchanged. This new gate still
 needs its runtime check.
 
 Run the pinned gateway as a disposable test child using explicit configuration,

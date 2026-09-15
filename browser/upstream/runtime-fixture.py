@@ -4,7 +4,10 @@
 Run only on a CI worker with the pinned Chutney source and isolated tool deps.
 No host service or public directory authority participates in this fixture.
 """
+import base64
+import binascii
 import dataclasses
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -85,6 +88,120 @@ def save_node_diagnostics(network, artifact, phase):
             entry["diagnosticError"] = type(error).__name__
         entries.append(entry)
     (artifact / f"node-status-{phase}.json").write_text(json.dumps(entries, indent=2) + "\n")
+
+
+def wait_for_shared_random(consensus, artifact, voting_interval, period_seconds):
+    # Pinned C Tor shared_random_state.c: get_sr_protocol_phase() uses 12
+    # commit + 12 reveal rounds. new_protocol_run() rotates SRVs at the
+    # reveal->commit boundary. An initial partial cycle may not agree;
+    # allow that cycle, two complete cycles, and four propagation rounds.
+    # Read only the native client's accepted cache; never synthesize or edit
+    # consensus contents, SR state, authority votes, or signatures.
+    if type(voting_interval) is not int or not 0 < voting_interval <= 20 \
+            or period_seconds != 24 * voting_interval:
+        raise RuntimeError("unsupported shared-random fixture schedule")
+    limit_seconds = 3 * period_seconds + 4 * voting_interval
+    started = time.monotonic()
+    receipt = {"synthetic": True, "source": "native client accepted consensus cache",
+               "votingIntervalSeconds": voting_interval, "roundsPerPhase": 12,
+               "phasesPerCycle": 2, "cycleSeconds": period_seconds,
+               "limitSeconds": limit_seconds, "ready": False, "observations": []}
+    last_digest = None
+    last_report = -60
+    while True:
+        elapsed = time.monotonic() - started
+        receipt["elapsedSeconds"] = round(elapsed, 3)
+        state = {"current": False, "previous": False, "valid": False, "fresh": False}
+        try:
+            with consensus.open("rb") as stream:
+                snapshot = stream.read(2 * 1024 * 1024 + 1)
+        except FileNotFoundError:
+            snapshot = None
+        if snapshot is not None:
+            if len(snapshot) > 2 * 1024 * 1024:
+                raise RuntimeError("synthetic consensus exceeds artifact bound")
+            lines = snapshot.decode("ascii").splitlines()
+            dates = {}
+            for name in ["valid-after", "fresh-until", "valid-until"]:
+                entries = [line[len(name) + 1:] for line in lines if line.startswith(name + " ")]
+                if len(entries) != 1:
+                    raise RuntimeError("invalid fixture consensus lifetime fields")
+                dates[name] = int(datetime.strptime(entries[0], "%Y-%m-%d %H:%M:%S")
+                                  .replace(tzinfo=timezone.utc).timestamp())
+                state[name] = entries[0]
+            if dates["fresh-until"] - dates["valid-after"] != voting_interval \
+                    or dates["valid-until"] <= dates["fresh-until"]:
+                raise RuntimeError("fixture consensus voting interval mismatch")
+            now = time.time()
+            state["valid"] = dates["valid-after"] <= now < dates["valid-until"]
+            state["fresh"] = dates["valid-after"] <= now < dates["fresh-until"]
+            values = []
+            for label, keyword in [("current", "shared-rand-current-value"),
+                                   ("previous", "shared-rand-previous-value")]:
+                entries = [line.split() for line in lines if line.startswith(keyword + " ")]
+                if len(entries) > 1:
+                    raise RuntimeError("duplicate fixture shared-random field")
+                if entries:
+                    parts = entries[0]
+                    if len(parts) != 3 or not re.fullmatch(r"[0-4]", parts[1]):
+                        raise RuntimeError("invalid fixture shared-random reveal count")
+                    try:
+                        value = base64.b64decode(parts[2], validate=True)
+                    except (ValueError, binascii.Error) as error:
+                        raise RuntimeError("invalid fixture shared-random encoding") from error
+                    if len(value) != 32 or base64.b64encode(value).decode("ascii") != parts[2]:
+                        raise RuntimeError("invalid fixture shared-random encoding")
+                    values.append(value)
+                    state[label] = True
+                    state[label + "Reveals"] = int(parts[1])
+            if len(values) == 2 and values[0] == values[1]:
+                raise RuntimeError("duplicate fixture shared-random generations")
+            state["hsdirRelays"] = sum(line.startswith("s ") and "HSDir" in line.split() for line in lines)
+            state["directorySignatures"] = sum(line.startswith("directory-signature ") for line in lines)
+            # Mirror the pinned Arti time-period offset to record whether real
+            # SRVs cover both its current and an adjacent publication period.
+            srv_start = dates["valid-after"] // period_seconds * period_seconds
+            offset = 12 * voting_interval
+            current_start = (dates["valid-after"] - offset) // period_seconds * period_seconds + offset
+            spans = []
+            if state["current"]:
+                spans.append((srv_start, srv_start + period_seconds))
+            if state["previous"]:
+                spans.append((srv_start - period_seconds, srv_start))
+            covered = [position for position in [-1, 0, 1] if any(
+                start <= current_start + position * period_seconds < end for start, end in spans)]
+            state["coveredArtiPeriodOffsets"] = covered
+            digest = hashlib.sha256(snapshot).hexdigest()
+            receipt["consensusSha256"] = digest
+            if digest != last_digest:
+                receipt["observations"].append({"elapsedSeconds": round(elapsed, 3), **state})
+                receipt["observations"] = receipt["observations"][-128:]
+                (artifact / "consensus-microdesc-readiness.txt").write_bytes(snapshot)
+                last_digest = digest
+            receipt["ready"] = state["valid"] and state["current"] and state["previous"] \
+                and state["hsdirRelays"] > 0 \
+                and 0 in covered and len(covered) >= 2
+        elapsed = time.monotonic() - started
+        receipt["elapsedSeconds"] = round(elapsed, 3)
+        if elapsed >= limit_seconds:
+            receipt["ready"] = False
+        receipt["lastState"] = state
+        (artifact / "shared-random-readiness.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        elapsed = time.monotonic() - started
+        if elapsed >= limit_seconds:
+            receipt["ready"] = False
+            receipt["elapsedSeconds"] = round(elapsed, 3)
+            (artifact / "shared-random-readiness.json").write_text(json.dumps(receipt, indent=2) + "\n")
+            raise RuntimeError("signed consensus shared-random readiness timed out")
+        if receipt["ready"]:
+            print(f"Signed shared-random consensus ready after {elapsed:.1f}s", flush=True)
+            return snapshot, receipt
+        if elapsed - last_report >= 60:
+            print(f"Waiting for signed shared-random consensus: {elapsed:.0f}s; "
+                  f"current={state['current']}, previous={state['previous']}, "
+                  f"valid={state['valid']}, fresh={state['fresh']}", flush=True)
+            last_report = elapsed
+        time.sleep(min(2, limit_seconds - elapsed))
 
 
 signal.signal(signal.SIGTERM, stop_signal)
@@ -189,8 +306,6 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
                       "ed_identity": node.fingerprint_ed25519.unwrap(),
                       "orports": [f"127.0.0.1:{node.orport}"]} for node in nodes[:4]]
         consensus = nodes[-1].dir / "cached-microdesc-consensus"
-        if not consensus.is_file():
-            raise RuntimeError("fixture has no signed microdescriptor consensus")
         # C Tor's TestingTorNetwork mode derives the onion-directory time period
         # from the voting interval without publishing that override in params.
         # Use the exact pinned Chutney generator's Arti override, not the public
@@ -200,9 +315,9 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
         if set(net_overrides) != {"hsdir_interval"} or type(net_overrides["hsdir_interval"]) is not int \
                 or not 5 <= net_overrides["hsdir_interval"] <= 14400:
             raise RuntimeError("unsupported Chutney onion-directory interval derivation")
-        if consensus.stat().st_size > 2 * 1024 * 1024:
-            raise RuntimeError("synthetic consensus exceeds artifact bound")
-        consensus_bytes = consensus.read_bytes()
+        consensus_bytes, shared_random_readiness = wait_for_shared_random(
+            consensus, artifact, network.v3_auth_voting_interval_seconds,
+            net_overrides["hsdir_interval"] * 60)
         consensus_lines = consensus_bytes.decode("ascii").splitlines()
         hsdir_relays = sum(line.startswith("s ") and "HSDir" in line.split() for line in consensus_lines)
         if hsdir_relays == 0:
@@ -222,6 +337,8 @@ with tempfile.TemporaryDirectory(prefix="cmsg-browser-tor-fixture-") as temporar
                 "valid-after ", "fresh-until ", "valid-until ", "voting-delay ", "params "))],
             "sharedRandomCurrentPresent": any(line.startswith("shared-rand-current-value ") for line in consensus_lines),
             "sharedRandomPreviousPresent": any(line.startswith("shared-rand-previous-value ") for line in consensus_lines),
+            "sharedRandomReadiness": {name: shared_random_readiness[name] for name in [
+                "ready", "elapsedSeconds", "limitSeconds", "cycleSeconds", "lastState"]},
         }, indent=2) + "\n")
         gateway_data = temporary / "gateway"
         gateway_data.mkdir()

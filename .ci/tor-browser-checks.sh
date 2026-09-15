@@ -81,7 +81,9 @@ PY
   export TOR_NATIVE_PEER_BIN="$CARGO_TARGET_DIR/debug/examples/tor_browser_peer"
   export TORJS_DIST="$scratch/source/tor-js/dist"
   export TOR_RUNTIME_ARTIFACT="$artifact_dir/runtime"
-  timeout --kill-after=15 1500 "${fixture_tools[2]}" browser/upstream/runtime-fixture.py \
+  # 360s bootstrap + 1520s signed-SRV warmup + 30s gateway + 1000s driver,
+  # plus 90s for startup and cleanup. Inner browser deadlines are unchanged.
+  timeout --kill-after=15 3000 "${fixture_tools[2]}" browser/upstream/runtime-fixture.py \
     2>&1 | tee "$artifact_dir/runtime/network.log" || result=$?
   (cd "$artifact_dir/runtime" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 fi

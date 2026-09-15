@@ -93,8 +93,10 @@ def main():
             ("onion_service.rs", tor_js / "crates/tor-js-wasm/src/onion_service.rs"),
         ])
     if stage == "test-network":
-        patches.extend([(tor_js, "tor-js-test-network.patch"), (arti, "arti-service-diagnostics.patch")])
+        patches.extend([(tor_js, "tor-js-test-network.patch"), (arti, "arti-service-diagnostics.patch"),
+                        (arti, "arti-publisher-diagnostics.patch")])
         post_overlay_patches.append((tor_js, "tor-js-service-diagnostics.patch"))
+        post_overlay_patches.append((tor_js, "tor-js-publisher-diagnostics.patch"))
         overlays.append(("test_network.rs", tor_js / "crates/tor-js-wasm/src/test_network.rs"))
     for checkout, patch in patches:
         git(checkout, "apply", "--check", str(source / patch))
