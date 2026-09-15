@@ -177,7 +177,7 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     let state = state.as_mut().ok_or("enroll first")?;
     match request {
         Request::Advance { now } => {
-            if state.phase != 1 || now != 300 || state.pair.time.0.load(Ordering::Relaxed) > now {
+            if !matches!(state.phase, 1 | 2) || now != 300 || state.pair.time.0.load(Ordering::Relaxed) > now {
                 return Err("fixture clock transition");
             }
             state.pair.time.0.store(now, Ordering::Relaxed);
