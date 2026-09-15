@@ -10,7 +10,6 @@ use zeroize::{Zeroize, Zeroizing};
 mod owner_policy;
 use owner_policy::DirectionalContact;
 
-const CLOSE_PAYLOAD_PREFIX: &[u8] = b"cmsg.contact-close.v1\0";
 const CONTACT_DATA_PREFIX: &[u8] = b"cmsg.contact-data.v2\0";
 const CONTACT_DIRECTIVE_PREFIX: &[u8] = b"cmsg.contact-directive.v1\0";
 
@@ -573,7 +572,7 @@ impl Inbox {
         &mut self, member: &mut Member, bytes: &[u8], key: &[u8; 32], context: &[u8],
         persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
     ) -> Result<Vec<u8>, Error> {
-        if bytes.is_empty() || bytes.len() > crate::MAX_DATA_BYTES || bytes.starts_with(CLOSE_PAYLOAD_PREFIX) {
+        if bytes.is_empty() || bytes.len() > crate::MAX_DATA_BYTES {
             return Err(Error::InvalidMessage);
         }
         self.send_contact_payload(member, bytes, false, key, context, persist)
@@ -803,7 +802,8 @@ impl Inbox {
         let entry = changed.state.introductions.get_mut(peer_id).ok_or(Error::InvalidState)?;
         entry.decision = Some(receipt.kind);
         entry.inbound_receipt = Some(serde_json::to_vec(receipt).map_err(|_| Error::InvalidMessage)?);
-        if receipt.kind == ContactResolutionKind::ClosedForever {
+        if receipt.kind == ContactResolutionKind::ClosedForever
+            && receipt_order(entry.outbound_receipt.as_deref())?.0 != 2 {
             entry.outbound_receipt = None;
         }
         if receipt.kind == ContactResolutionKind::ClosedForever {
@@ -954,9 +954,7 @@ impl Inbox {
             let archive = changed.state.archived.entry(peer.clone()).or_default();
             for record in incoming {
                 if let Some(existing) = archive.iter_mut().find(|i| i.id == record.id) {
-                    if existing.decision.is_none() || record.decision == Some(ContactResolutionKind::ClosedForever) {
-                        *existing = record.clone();
-                    }
+                    merge_archived_introduction(existing, record)?;
                 } else { archive.push(record.clone()); }
             }
         }
@@ -991,6 +989,7 @@ impl Inbox {
                 }
                 let local_receipt_time = receipt_order(existing.outbound_receipt.as_deref())?;
                 let remote_receipt_time = receipt_order(incoming.outbound_receipt.as_deref())?;
+                let previous_outbound = existing.outbound_receipt.clone();
                 let strict = match (&existing.strict, &incoming.strict) {
                     (Some(local), Some(remote)) => {
                         if local.role != remote.role || local.policy != remote.policy
@@ -1018,6 +1017,9 @@ impl Inbox {
                     _ => (),
                 }
                 existing.strict = strict;
+                if local_receipt_time.0 == 2 && local_receipt_time > remote_receipt_time {
+                    existing.outbound_receipt = previous_outbound;
+                }
                 if existing.decision == incoming.decision {
                     if receipt_order(incoming.inbound_receipt.as_deref())? > receipt_order(existing.inbound_receipt.as_deref())? {
                         existing.inbound_receipt = incoming.inbound_receipt.clone();
@@ -1277,4 +1279,38 @@ fn receipt_order(bytes: Option<&[u8]>) -> Result<(u8, u64), Error> {
             ContactResolutionKind::ClosedForever => 2,
         }, receipt.issued_at)).map_err(|_| Error::InvalidStore))
         .transpose().map(|order| order.unwrap_or((0, 0)))
+}
+
+fn merge_archived_introduction(existing: &mut Introduction, incoming: &Introduction) -> Result<(), Error> {
+    if existing.id != incoming.id { return Err(Error::InvalidState); }
+    let old_receipt = receipt_order(existing.outbound_receipt.as_deref())?;
+    let new_receipt = receipt_order(incoming.outbound_receipt.as_deref())?;
+    let previous_outbound = existing.outbound_receipt.clone();
+    let strict = match (&existing.strict, &incoming.strict) {
+        (Some(a), Some(b)) => {
+            if a.role != b.role || a.policy != b.policy || a.initial_writer_key != b.initial_writer_key { return Err(Error::InvalidState); }
+            let mut combined = a.clone();
+            combined.sent |= b.sent;
+            combined.received |= b.received;
+            combined.close_sent = if new_receipt > old_receipt { b.close_sent }
+                else if old_receipt > new_receipt { a.close_sent } else { a.close_sent || b.close_sent };
+            Some(combined)
+        }
+        (None, None) => None,
+        _ => return Err(Error::InvalidState),
+    };
+    if matches!((existing.decision, incoming.decision),
+        (None, Some(_)) | (Some(ContactResolutionKind::Answered), Some(ContactResolutionKind::ClosedForever))) {
+        existing.decision = incoming.decision;
+        existing.outbound_receipt = incoming.outbound_receipt.clone();
+    }
+    if existing.decision == incoming.decision && new_receipt > old_receipt {
+        existing.outbound_receipt = incoming.outbound_receipt.clone();
+    }
+    if old_receipt.0 == 2 && old_receipt > new_receipt { existing.outbound_receipt = previous_outbound; }
+    if receipt_order(incoming.inbound_receipt.as_deref())? > receipt_order(existing.inbound_receipt.as_deref())? {
+        existing.inbound_receipt = incoming.inbound_receipt.clone();
+    }
+    existing.strict = strict;
+    Ok(())
 }

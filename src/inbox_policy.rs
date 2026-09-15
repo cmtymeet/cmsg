@@ -8,7 +8,7 @@ pub(super) struct DirectionalContact {
     local: Vec<ContactDirective>,
     peer: Vec<ContactDirective>,
     conflict: bool,
-    peer_legacy_block: bool,
+    peer_legacy_block: Option<[u8; 32]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -30,7 +30,7 @@ fn expired_for(block: &ContactDirective, initiative: Option<&ContactDirective>) 
 
 impl DirectionalContact {
     pub(super) fn blocked(&self) -> bool {
-        self.conflict || self.peer_legacy_block
+        self.conflict || self.peer_legacy_block.is_some()
             || self.local.last().is_some_and(|d| d.kind == DirectiveKind::Block && !expired_for(d, self.peer.last()))
             || self.peer.last().is_some_and(|d| d.kind == DirectiveKind::Block && !expired_for(d, self.local.last()))
     }
@@ -89,12 +89,20 @@ impl DirectionalContact {
         self.conflict |= other.conflict;
         self.conflict |= !Self::merge_chain(&mut self.local, &other.local)?;
         self.conflict |= !Self::merge_chain(&mut self.peer, &other.peer)?;
-        self.peer_legacy_block |= other.peer_legacy_block;
-        if self.peer.last().is_some_and(|d| d.kind == DirectiveKind::FreshInitiative) {
-            self.peer_legacy_block = false;
+        if let Some(nonce) = other.peer_legacy_block {
+            if !self.peer_closure_superseded(nonce) { self.peer_legacy_block = Some(nonce); }
         }
+        if self.peer_legacy_block.is_some_and(|nonce| self.peer_closure_superseded(nonce)) { self.peer_legacy_block = None; }
         self.conflict |= self.selected().is_err();
         Ok(())
+    }
+
+    fn peer_closure_superseded(&self, nonce: [u8; 32]) -> bool {
+        self.peer.iter().enumerate().any(|(index, directive)| {
+            directive.kind == DirectiveKind::Block && directive.introduction_id == nonce
+                && self.peer[index + 1..].iter().any(|later| later.kind == DirectiveKind::FreshInitiative
+                    && later.introduction_id != nonce)
+        })
     }
 }
 
@@ -129,7 +137,26 @@ impl Inbox {
             &member.policy_group_id().unwrap_or_default(), None, until)?;
         history.local.push(directive);
         self.state.closed.remove(peer);
+        if let Some(entry) = self.state.introductions.get_mut(peer) {
+            if entry.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Recipient) {
+                if !entry.outbound_receipt.as_ref().is_some_and(|bytes| serde_json::from_slice::<ContactResolution>(bytes)
+                    .is_ok_and(|r| r.kind == ContactResolutionKind::ClosedForever)) {
+                    let receipt = member.sign_contact_resolution(peer, &entry.id, ContactResolutionKind::ClosedForever)?;
+                    entry.outbound_receipt = Some(serde_json::to_vec(&receipt).map_err(|_| Error::InvalidMessage)?);
+                }
+                entry.decision = Some(ContactResolutionKind::ClosedForever);
+            }
+        }
         Ok(())
+    }
+
+    fn has_unresolved_incoming(&self, peer: &str) -> bool {
+        self.state.introductions.get(peer).into_iter()
+            .chain(self.state.archived.get(peer).into_iter().flatten())
+            .any(|intro| intro.strict.as_ref().is_some_and(|s| s.role == FirstContactRole::Recipient && s.received && !s.sent)
+                && !intro.outbound_receipt.as_ref().is_some_and(|bytes| serde_json::from_slice::<ContactResolution>(bytes)
+                    .is_ok_and(|r| r.kind == ContactResolutionKind::ClosedForever && r.responder_id == self.state.recipient_id
+                        && r.peer_id == peer && r.introduction_id == intro.id)))
     }
 
     pub(super) fn record_local_close(&mut self, peer: &str, member: &Member) -> Result<(), Error> {
@@ -142,7 +169,9 @@ impl Inbox {
     }
 
     pub(super) fn record_peer_close(&mut self, peer: &str) {
-        self.state.directional.entry(peer.to_owned()).or_default().peer_legacy_block = true;
+        if let Some(intro) = self.state.introductions.get(peer) {
+            self.state.directional.entry(peer.to_owned()).or_default().peer_legacy_block = Some(intro.id);
+        }
     }
 
     fn archive_current(&mut self, peer: &str) -> Result<(), Error> {
@@ -199,6 +228,7 @@ impl Inbox {
         key: &[u8; 32], context: &[u8], mut persist: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
     ) -> Result<Vec<u8>, Error> {
         let peer = self.contact_peer(member)?;
+        if fresh.is_some() && self.awaiting_peer_resolution(&peer) { return Err(Error::Admission); }
         let now = member.authorization_time()?;
         let mut changed = self.duplicate();
         if changed.state.closed.contains(&peer) { changed.append_local_block(&peer, None, member)?; }
@@ -282,6 +312,32 @@ impl Inbox {
         member.verify_contact_directive(newest, peer)?;
         DirectionalContact::validate_chain(&control.chain, peer, &self.state.recipient_id, member)?;
         if newest.kind == DirectiveKind::FreshInitiative && newest.group_id != member.policy_group_id()? { return Err(Error::Admission); }
+        if newest.kind == DirectiveKind::FreshInitiative {
+            let local = self.state.directional.get(peer).and_then(|h| h.local.last());
+            if newest.initiator_id == self.state.recipient_id {
+                // A counterpart's signature is consent only to this exact
+                // initiative, not authority to choose our role or nonce.
+                if !local.is_some_and(|d| d.kind == DirectiveKind::FreshInitiative
+                    && d.introduction_id == newest.introduction_id && d.policy == newest.policy
+                    && d.group_id == newest.group_id && d.initiator_id == newest.initiator_id
+                    && d.digest().is_ok_and(|digest| digest == newest.peer_digest)) {
+                    return Err(Error::Admission);
+                }
+            } else {
+                if self.state.introductions.get(peer).is_some_and(|i| i.id == newest.introduction_id)
+                    && !self.state.directional.get(peer).and_then(|h| h.peer.last())
+                        .is_some_and(|d| d.digest().ok() == newest.digest().ok()) {
+                    return Err(Error::Admission);
+                }
+                let prior_owner_block = control.chain.iter().rev().nth(1).is_some_and(|d| d.kind == DirectiveKind::Block);
+                let local_expiry = local.is_some_and(|d| d.kind == DirectiveKind::Block
+                    && d.until.is_some_and(|until| until <= newest.issued_at)
+                    && d.digest().is_ok_and(|digest| digest == newest.peer_digest));
+                if (!prior_owner_block && !local_expiry) || self.has_unresolved_incoming(peer) {
+                    return Err(Error::Admission);
+                }
+            }
+        }
         let history = self.state.directional.entry(peer.to_owned()).or_default();
         let was_len = history.peer.len();
         if !DirectionalContact::merge_chain(&mut history.peer, &control.chain)? {
@@ -307,7 +363,9 @@ impl Inbox {
                 // still requires explicit consent; data remains inaccessible.
                 if !owner_initiates && !expired { return Err(Error::Admission); }
             }
-            history.peer_legacy_block = false;
+            if history.peer_legacy_block.is_some_and(|nonce| history.peer_closure_superseded(nonce)) {
+                history.peer_legacy_block = None;
+            }
             history.conflict |= history.selected().is_err();
             if !history.conflict { self.install_fresh(peer, newest, member)?; }
             return Ok(Received::ContactPolicyChanged);
@@ -318,7 +376,7 @@ impl Inbox {
             if receipt.kind != ContactResolutionKind::ClosedForever { return Err(Error::Admission); }
             entry.decision = Some(ContactResolutionKind::ClosedForever);
             entry.inbound_receipt = Some(serde_json::to_vec(receipt).map_err(|_| Error::InvalidMessage)?);
-            entry.outbound_receipt = None;
+            if receipt_order(entry.outbound_receipt.as_deref())?.0 != 2 { entry.outbound_receipt = None; }
             return Ok(Received::ContactClosed);
         }
         Ok(Received::ContactPolicyChanged)
