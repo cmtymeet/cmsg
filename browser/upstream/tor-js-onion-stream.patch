@@ -11,6 +11,15 @@ diff --git a/crates/tor-js-wasm/src/lib.rs b/crates/tor-js-wasm/src/lib.rs
  mod storage;
 +mod onion_stream;
 +pub use onion_stream::OnionStream;
+@@ -292,1 +294,2 @@
+     tls_config: Arc<futures_rustls::rustls::ClientConfig>,
++    onion_streams: std::rc::Rc<onion_stream::OnionStreamRegistry>,
+@@ -376,1 +379,2 @@
+         self.inner = None;
++        self.onion_streams.close();
+@@ -448,1 +452,2 @@
+         tls_config: make_tls_config(),
++        onion_streams: std::rc::Rc::new(onion_stream::OnionStreamRegistry::default()),
 diff --git a/src/TorClient.ts b/src/TorClient.ts
 --- a/src/TorClient.ts
 +++ b/src/TorClient.ts

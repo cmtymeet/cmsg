@@ -26,8 +26,11 @@ if test "${CHECK_SUITE:-core}" = browser; then
   test -x "$BROWSER_BIN"
   compiler_root="$(rustc --print sysroot)"
   compiler_host="$(rustc -vV | sed -n 's/^host: //p')"
-  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$compiler_root/lib/rustlib/$compiler_host/bin/rust-lld"
-  test -x "$CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="${WASM_LINKER:-$compiler_root/lib/rustlib/$compiler_host/bin/rust-lld}"
+  if ! test -x "$CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"; then
+    printf 'Preinstalled Wasm linker unavailable: %s\n' "$CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"
+    exit 1
+  fi
   if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
     cargo update --manifest-path .ci/browser-bindgen/Cargo.toml --workspace
   fi
@@ -42,6 +45,12 @@ if test "${CHECK_SUITE:-core}" = browser; then
   exit 0
 fi
 if test "${CHECK_SUITE:-core}" = composition; then
+  test -n "$CFRM_SOURCE_ARCHIVE"
+  test -n "$CFRM_SOURCE_SHA256"
+  printf '%s  %s\n' "$CFRM_SOURCE_SHA256" "$CFRM_SOURCE_ARCHIVE" | sha256sum --check --strict
+  test "$(git get-tar-commit-id < "$CFRM_SOURCE_ARCHIVE")" = 5ce49969b5208dc2b6fd8f7e4e86223d3d7372f3
+  mkdir -p .ci-dependencies/cfrm
+  tar --extract --touch --file "$CFRM_SOURCE_ARCHIVE" --directory .ci-dependencies/cfrm --no-same-owner
   test -d "$OPENSSL_INCLUDE_DIR/openssl"
   test -d "$OPENSSL_LIB_DIR"
   export OPENSSL_INCLUDE_DIR OPENSSL_LIB_DIR
@@ -54,7 +63,8 @@ if test "${CHECK_SUITE:-core}" = composition; then
   timeout 1200 cargo test --locked --manifest-path "$manifest" -- --test-threads=2 || result=$?
   cargo fmt --manifest-path "$manifest"
   tar --create --file "$artifact_dir/composition-source.tar" experiments/community-composition/src experiments/community-composition/tests
-  (cd "$artifact_dir" && sha256sum Cargo.lock composition-Cargo.lock composition-source.tar > SHA256SUMS)
+  printf '%s\n' "$CFRM_SOURCE_SHA256" > "$artifact_dir/cfrm-source-sha256.txt"
+  (cd "$artifact_dir" && sha256sum Cargo.lock composition-Cargo.lock composition-source.tar cfrm-source-sha256.txt > SHA256SUMS)
   exit "$result"
 fi
 timeout 1200 cargo test --locked --all-targets -- --test-threads=2 || result=$?

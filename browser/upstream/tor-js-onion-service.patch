@@ -1,0 +1,58 @@
+diff --git a/crates/tor-js-wasm/Cargo.toml b/crates/tor-js-wasm/Cargo.toml
+--- a/crates/tor-js-wasm/Cargo.toml
++++ b/crates/tor-js-wasm/Cargo.toml
+@@ -24,1 +24,3 @@
+     "vanguards",
++    "onion-service-service",
++    "ephemeral-keystore",
+@@ -28,1 +30,6 @@
+ tor-hscrypto = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
++tor-hsservice = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
++tor-keymgr = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false, features = ["ephemeral-keystore"] }
++tor-config = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
++tor-cell = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
++tor-proto = { git = "https://github.com/voltrevo/arti", rev = "2be5b51e895a687d1e7fc3ce1c01896730bcb9d3", default-features = false }
+diff --git a/crates/tor-js-wasm/src/lib.rs b/crates/tor-js-wasm/src/lib.rs
+--- a/crates/tor-js-wasm/src/lib.rs
++++ b/crates/tor-js-wasm/src/lib.rs
+@@ -44,1 +44,3 @@
+ pub use onion_stream::OnionStream;
++mod onion_service;
++pub use onion_service::BrowserOnionService;
+@@ -295,1 +297,3 @@
+     onion_streams: std::rc::Rc<onion_stream::OnionStreamRegistry>,
++    onion_service_started: std::cell::Cell<bool>,
++    onion_service: RefCell<Option<std::rc::Weak<onion_service::ServiceState>>>,
+@@ -380,1 +384,4 @@
+         self.onion_streams.close();
++        if let Some(service) = self.onion_service.borrow_mut().take().and_then(|s| s.upgrade()) {
++            service.close();
++        }
+@@ -397,1 +404,4 @@
+     let mut config_builder = TorClientConfig::builder();
++    config_builder.storage().keystore().primary().kind(
++        tor_config::ExplicitOrAuto::Explicit(tor_keymgr::config::ArtiKeystoreKind::Ephemeral),
++    );
+@@ -453,1 +463,3 @@
+         onion_streams: std::rc::Rc::new(onion_stream::OnionStreamRegistry::default()),
++        onion_service_started: std::cell::Cell::new(false),
++        onion_service: RefCell::new(None),
+diff --git a/src/TorClient.ts b/src/TorClient.ts
+--- a/src/TorClient.ts
++++ b/src/TorClient.ts
+@@ -28,1 +28,15 @@
++  static async onionServiceSupported(): Promise<boolean> {
++    await ensureWasmInitialized();
++    return typeof WasmTorClient.onionServiceSupported === 'function'
++      && WasmTorClient.onionServiceSupported();
++  }
++
++  async hostOnion(port: number, maximumStreams: number, deadlineMs: number) {
++    if (this.closed) throw new Error('tor-js:OnionService');
++    const client = await this.clientPromise;
++    await this.ready();
++    if (this.closed) throw new Error('tor-js:OnionService');
++    return client.hostOnion(port, maximumStreams, deadlineMs);
++  }
++
+   constructor(options: TorClientOptions = {}) {

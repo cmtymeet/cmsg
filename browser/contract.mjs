@@ -4,6 +4,7 @@ import {
   init, BrowserFrameCodec, BrowserIdentity, BrowserMember, BrowserInbox, BrowserOnionEndpoint,
 } from './index.mjs';
 import { OnionHttpTransport } from './internal/http.mjs';
+import { OnionFramedStream } from './internal/streams.mjs';
 
 function assert(condition, label) {
   if (!condition) throw new Error(`browser contract: ${label}`);
@@ -325,6 +326,32 @@ export async function runBrowserContract() {
   assert(sanitized === 'cmsg:Transport', 'upstream close errors scrubbed');
   throwingClose.close();
   passed.push('scripted adapter boundary: transport and shutdown errors cannot disclose upstream details');
+
+  const incomingFrames = new Uint8Array([...frame(new Uint8Array([1, 255])), ...frame(new Uint8Array([2]))]);
+  const chunks = [incomingFrames.slice(0, 3), incomingFrames.slice(3)];
+  const outgoing = [];
+  let rawClosed = 0;
+  const framed = new OnionFramedStream({
+    read: async (maximum, deadline) => {
+      assert(maximum === 65536 && deadline > 0 && deadline <= 1000, 'bounded raw read');
+      return chunks.shift() ?? new Uint8Array();
+    },
+    write: async (bytes) => { outgoing.push(bytes.slice()); },
+    close: () => { rawClosed += 1; }, free: () => {},
+  }, 1000);
+  await framed.send(new Uint8Array([0, 255]));
+  assert(sameBytes(outgoing[0], [0, 0, 0, 2, 0, 255]), 'native interoperable uint32 framing');
+  assert(sameBytes(await framed.receive(), [1, 255]), 'fragmented raw receive');
+  assert(sameBytes(await framed.receive(), [2]) && chunks.length === 0, 'coalesced second frame');
+  await rejects(() => framed.receive(), 'EOF is terminal');
+  assert(framed.closed && rawClosed === 1, 'raw EOF closes once');
+  const invalidRaw = new OnionFramedStream({
+    read: async () => new Uint8Array([0, 0, 0, 0]), write: async () => {},
+    close: () => {}, free: () => {},
+  }, 1000);
+  await rejects(() => invalidRaw.receive(), 'invalid raw frame');
+  assert(invalidRaw.closed, 'invalid raw frame poisons stream');
+  passed.push('scripted raw-stream boundary: native framing, fragmentation, coalescing, EOF and invalid-frame closure');
 
   bob.member.free();
   alice.identity.free();

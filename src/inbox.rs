@@ -634,7 +634,16 @@ impl Inbox {
             }
             Received::Bytes(message) => Some((&message.member_id, message.bytes.as_slice())),
             Received::MembershipChanged => {
-                if peer_excluded { return Err(Error::Admission); }
+                if peer_excluded {
+                    let before: BTreeSet<_> = member.participants()?.iter()
+                        .map(|p| (p.member_id.clone(), p.chat_public_key.clone())).collect();
+                    let after: BTreeSet<_> = candidate.participants()?.iter()
+                        .map(|p| (p.member_id.clone(), p.chat_public_key.clone())).collect();
+                    // Renewing an existing device's credentials can make a
+                    // delayed close receipt verifiable. It must not add/remove
+                    // devices, reopen contact, or expose application data.
+                    if before != after { return Err(Error::Admission); }
+                }
                 if self.contact_peer(&candidate)? != peer { return Err(Error::Admission); }
                 None
             }
@@ -673,8 +682,19 @@ impl Inbox {
         let strict = intro.strict.as_ref().ok_or(Error::InvalidState)?;
         if strict.close_sent { return Err(Error::Admission); }
         let mut candidate = member.staged_copy(key, context)?;
-        let receipt = candidate.sign_contact_resolution(&peer, &intro.id, ContactResolutionKind::ClosedForever)?;
-        let encoded = serde_json::to_vec(&receipt).map_err(|_| Error::InvalidMessage)?;
+        let encoded = if let Some(stored) = &intro.outbound_receipt {
+            let receipt: ContactResolution = serde_json::from_slice(stored).map_err(|_| Error::InvalidStore)?;
+            if receipt.kind == ContactResolutionKind::ClosedForever {
+                receipt.verify_device_signature(&candidate, candidate.authorization_time()?)?;
+                stored.clone()
+            } else {
+                serde_json::to_vec(&candidate.sign_contact_resolution(&peer, &intro.id, ContactResolutionKind::ClosedForever)?)
+                    .map_err(|_| Error::InvalidMessage)?
+            }
+        } else {
+            serde_json::to_vec(&candidate.sign_contact_resolution(&peer, &intro.id, ContactResolutionKind::ClosedForever)?)
+                .map_err(|_| Error::InvalidMessage)?
+        };
         let mut payload = Zeroizing::new(CLOSE_PAYLOAD_PREFIX.to_vec());
         payload.extend_from_slice(&encoded);
         let wire = candidate.send_bytes(&payload)?;
@@ -818,6 +838,47 @@ impl Inbox {
         self.state.introductions.get(peer_id)?.outbound_receipt.as_deref()
     }
 
+    /// Reissue an expired stored decision under this currently authorized
+    /// device. The stable pair, nonce and decision cannot change. This creates
+    /// no resolution or credit event; it only restores private delivery after
+    /// certificate renewal. A fresh close can be transmitted once afterward.
+    pub fn refresh_outbound_resolution(
+        &mut self,
+        peer_id: &str,
+        member: &Member,
+        key: &[u8; 32],
+        context: &[u8],
+        mut persist: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<Vec<u8>, Error> {
+        self.check_binding(member)?;
+        member.member_id()?;
+        let entry = self.state.introductions.get(peer_id).ok_or(Error::InvalidState)?;
+        let stored = entry.outbound_receipt.as_ref().ok_or(Error::InvalidState)?;
+        let previous: ContactResolution = serde_json::from_slice(stored).map_err(|_| Error::InvalidStore)?;
+        if previous.responder_id != self.state.recipient_id || previous.peer_id != peer_id
+            || previous.introduction_id != entry.id || previous.community_id != self.state.community_id
+            || previous.issued_at == 0 || previous.issued_at > member.authorization_time()?
+        {
+            return Err(Error::InvalidStore);
+        }
+        previous.verify_device_signature(member, previous.issued_at)?;
+        if previous.verify_device_signature(member, member.authorization_time()?).is_ok() {
+            return Err(Error::InvalidState);
+        }
+        let refreshed = member.sign_contact_resolution(peer_id, &entry.id, previous.kind)?;
+        let encoded = serde_json::to_vec(&refreshed).map_err(|_| Error::InvalidMessage)?;
+        let mut changed = self.duplicate();
+        let updated = changed.state.introductions.get_mut(peer_id).ok_or(Error::InvalidState)?;
+        updated.outbound_receipt = Some(encoded.clone());
+        if previous.kind == ContactResolutionKind::ClosedForever {
+            if let Some(strict) = &mut updated.strict { strict.close_sent = false; }
+        }
+        changed.validate_state(member)?;
+        persist(&changed.seal(member, key, context)?)?;
+        *self = changed;
+        Ok(encoded)
+    }
+
     /// Private device-sync payload. It discloses contacts: carry it only inside
     /// an encrypted channel authenticated to another device of this same member.
     /// Member-controlled root authorization is required; an eligibility issuer's
@@ -884,6 +945,12 @@ impl Inbox {
             &Zeroizing::new(sync.signing_bytes()?),
             &Signature::from_slice(&sync.signature).map_err(|_| Error::Admission)?,
         ).map_err(|_| Error::Admission)?;
+        let incoming_state = Self { state: InboxState {
+            community_id: sync.community_id.clone(), recipient_id: sync.owner_id.clone(),
+            root_authorized: true, known: sync.known.clone(), blocked: BTreeSet::new(),
+            closed: sync.closed.clone(), introductions: sync.introductions.clone(), pending: None,
+        }};
+        incoming_state.validate_state(member)?;
         let mut changed = self.duplicate();
         changed.state.known.extend(sync.known.iter().cloned());
         changed.state.closed.extend(sync.closed.iter().cloned());
@@ -892,6 +959,8 @@ impl Inbox {
                 if existing.id != incoming.id {
                     return Err(Error::InvalidState);
                 }
+                let local_receipt_time = receipt_order(existing.outbound_receipt.as_deref())?;
+                let remote_receipt_time = receipt_order(incoming.outbound_receipt.as_deref())?;
                 let strict = match (&existing.strict, &incoming.strict) {
                     (Some(local), Some(remote)) => {
                         if local.role != remote.role || local.policy != remote.policy
@@ -901,7 +970,11 @@ impl Inbox {
                         let mut merged = local.clone();
                         merged.sent |= remote.sent;
                         merged.received |= remote.received;
-                        merged.close_sent |= remote.close_sent;
+                        merged.close_sent = if remote_receipt_time > local_receipt_time {
+                            remote.close_sent
+                        } else if local_receipt_time > remote_receipt_time {
+                            local.close_sent
+                        } else { local.close_sent || remote.close_sent };
                         Some(merged)
                     }
                     (None, None) => None,
@@ -916,10 +989,10 @@ impl Inbox {
                 }
                 existing.strict = strict;
                 if existing.decision == incoming.decision {
-                    if existing.inbound_receipt.is_none() {
+                    if receipt_order(incoming.inbound_receipt.as_deref())? > receipt_order(existing.inbound_receipt.as_deref())? {
                         existing.inbound_receipt = incoming.inbound_receipt.clone();
                     }
-                    if existing.outbound_receipt.is_none() {
+                    if remote_receipt_time > local_receipt_time {
                         existing.outbound_receipt = incoming.outbound_receipt.clone();
                     }
                 }
@@ -1137,4 +1210,13 @@ fn inbox_context(context: &[u8]) -> Result<[u8; 32], Error> {
     hash.update(b"cmsg.inbox.v1\0");
     hash.update(context);
     Ok(hash.finalize().into())
+}
+
+fn receipt_order(bytes: Option<&[u8]>) -> Result<(u8, u64), Error> {
+    bytes.map(|bytes| serde_json::from_slice::<ContactResolution>(bytes)
+        .map(|receipt| (match receipt.kind {
+            ContactResolutionKind::Answered => 1,
+            ContactResolutionKind::ClosedForever => 2,
+        }, receipt.issued_at)).map_err(|_| Error::InvalidStore))
+        .transpose().map(|order| order.unwrap_or((0, 0)))
 }

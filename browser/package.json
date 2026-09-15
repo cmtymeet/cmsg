@@ -7,6 +7,7 @@
   "exports": {
     ".": { "types": "./index.d.ts", "import": "./index.mjs" },
     "./tor-js": { "types": "./tor-js.d.ts", "import": "./tor-js.mjs" },
+    "./tor-streams": { "types": "./tor-streams.d.ts", "import": "./tor-streams.mjs" },
     "./wasm": "./pkg/cmsg.js",
     "./wasm-binary": "./pkg/cmsg_bg.wasm"
   },
@@ -15,7 +16,10 @@
     "index.d.ts",
     "tor-js.mjs",
     "tor-js.d.ts",
+    "tor-streams.mjs",
+    "tor-streams.d.ts",
     "internal/http.mjs",
+    "internal/streams.mjs",
     "upstream/**",
     "pkg/cmsg.js",
     "pkg/cmsg.d.ts",

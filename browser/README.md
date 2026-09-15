@@ -98,6 +98,38 @@ board statements. There is no generic device-signing or private-key export API.
 
 ## Tor transport
 
+### Experimental raw onion node
+
+The `/tor-streams` entrypoint uses the separate pinned `service` build described
+in `upstream/`. Its source provides browser-owned onion publication and raw
+Arti streams. Patch application, compilation and a real browser/native Tor
+round trip remain required evidence; the stock npm TorJS package is rejected.
+
+```js
+import { createTorJsOnionNode } from '@corbet-labs/cmsg/tor-streams';
+const node = await createTorJsOnionNode({
+  gateway: configuredGateway,
+  bootstrapDeadlineMs: 180000,
+  operationDeadlineMs: 45000,
+});
+const listener = await node.listen({ port: 4242, maximumStreams: 8, deadlineMs: 60000 });
+// Sign/publish listener.host and listener.port with this device's live lease.
+const stream = await listener.accept();
+const incomingWire = await stream.receive();
+const incoming = await inbox.receive(incomingWire, wrappingKey, context, persist);
+```
+
+`node.connect(peerOnion, peerPort)` returns the same framed stream. Its wire
+format matches native `FramedStream` directly; it requires no HTTP payload
+server. `send` and `receive` each allow one pending operation, can proceed in
+opposite directions concurrently, and close on framing/transport failure.
+Closing a node closes its listener and streams. Each node can launch one onion
+service; restarting creates fresh onion keys. Permanent member identity and
+contact policy remain separately encrypted cmsg state. A terminated or
+suspended browser cannot promise continuous reachability.
+
+### HTTP client bridge
+
 The optional `@corbet-labs/cmsg/tor-js` entrypoint requires the pinned onion-enabled
 build of `tor-js@0.4.1` described in `upstream/`. The stock npm artifact omits
 Arti's `onion-service-client` feature and is rejected before network bootstrap.

@@ -4,12 +4,13 @@ skip_clone: true
 variables:
   SOURCE_ARCHIVE: {default: ""}
   SOURCE_SHA256: {default: ""}
+  TORJS_SOURCE_ARCHIVE: {default: ""}
+  TORJS_SOURCE_SHA256: {default: ""}
+  ARTI_SOURCE_ARCHIVE: {default: ""}
+  ARTI_SOURCE_SHA256: {default: ""}
   ARTIFACT_ROOT: {default: ""}
   CARGO_TARGET_DIR: {default: ""}
-  RESOLVE_DEPENDENCIES: {default: "0"}
-  CHECK_SUITE: {default: "core"}
-  BROWSER_BIN: {default: ""}
-  WASM_LINKER: {default: ""}
+  TOR_STAGE: {default: "service"}
   OPENSSL_INCLUDE_DIR: {default: ""}
   OPENSSL_LIB_DIR: {default: ""}
 steps:
@@ -23,7 +24,7 @@ steps:
         printf '%s  %s\n' "$SOURCE_SHA256" "$SOURCE_ARCHIVE" | sha256sum --check --strict
         test "$(git get-tar-commit-id < "$SOURCE_ARCHIVE")" = "$CI_COMMIT_SHA"
         tar --extract --touch --file "$SOURCE_ARCHIVE" --no-same-owner
-  - name: portable-core-behavior
+  - name: pinned-arti-browser
     image: bash
     depends_on: [verified-source]
     environment:
@@ -35,4 +36,4 @@ steps:
         test -n "$CARGO_TARGET_DIR"
         test -n "$ARTIFACT_ROOT"
         mkdir -p "$CARGO_TARGET_DIR"
-        flock "$CARGO_TARGET_DIR.ci.lock" bash .ci/portable-checks.sh
+        flock "$CARGO_TARGET_DIR.ci.lock" bash .ci/tor-browser-checks.sh

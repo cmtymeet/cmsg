@@ -1,1 +1,3 @@
 /target/
+/.ci-dependencies/
+/browser/pkg/
