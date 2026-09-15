@@ -166,7 +166,7 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
                 .prepare_accounting_contact(s.pair.ar.member_id(), &s.pair.b),
         )?;
         let result = json!({"version":1, "synthetic":true, "hashScheme":SCHEME, "now":100,
-            "community":HEX.encode(&Sha256::digest(b"synthetic-community")), "acceptedTimes":[100,300],
+            "community":HEX.encode(&Sha256::digest(b"synthetic-community")), "acceptedTimes":[100,300,600],
             "trust":common::trust(), "entries":s.originals.iter().map(|d| entry(d,100)).collect::<Result<Vec<_>>>()?,
             "context":context, "groupBinding":HEX.encode(&core(context.contact.group_binding())?),
             "contactPolicyDigest":HEX.encode(&core(context.contact.policy_digest())?),
@@ -177,7 +177,7 @@ fn handle(state: &mut Option<State>, request: Request) -> Result<Value> {
     let state = state.as_mut().ok_or("enroll first")?;
     match request {
         Request::Advance { now } => {
-            if !matches!(state.phase, 1 | 2) || now != 300 || state.pair.time.0.load(Ordering::Relaxed) > now {
+            if !matches!(state.phase, 1 | 2) || !matches!(now, 300 | 600) || state.pair.time.0.load(Ordering::Relaxed) > now {
                 return Err("fixture clock transition");
             }
             state.pair.time.0.store(now, Ordering::Relaxed);
