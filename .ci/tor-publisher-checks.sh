@@ -11,6 +11,11 @@ regression=publish::test::upload_all_skips_clean_periods_without_skipping_dirty_
 timeout 1800 cargo test --locked --manifest-path "$arti_manifest" \
   -p tor-hsservice --features "$features" publish:: -- --test-threads=2 \
   2>&1 | tee "$artifact/publisher-tests.log"
+if test "${TOR_RENEWAL:-0}" = 1; then
+  timeout 1800 cargo test --locked --manifest-path "$arti_manifest" \
+    -p tor-hsservice --features "$features" fixture_renewal_tests -- --test-threads=2 \
+    2>&1 | tee "$artifact/publisher-renewal-diagnostics-tests.log"
+fi
 
 # Demonstrate that the regression detects the original defect. Keep all other
 # source bytes fixed, and restore the tested implementation before any build.
