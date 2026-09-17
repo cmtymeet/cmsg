@@ -15,7 +15,7 @@ function raw() {
     close() { this.closed++; }, free() { this.freed++; } };
 }
 function service(overrides = {}) {
-  return { host: ONION, port: 80, closed: 0, freed: 0, accept: async () => raw(),
+  return { host: ONION, port: 80, readiness: 'running', closed: 0, freed: 0, accept: async () => raw(),
     close() { this.closed++; }, free() { this.freed++; }, ...overrides };
 }
 async function tick() { await new Promise(resolve => setTimeout(resolve, 0)); }
@@ -116,6 +116,33 @@ export async function runTorNodeContract() {
     accepted.close(); listener.close(); node.close();
   }
   passed.push('scripted Tor factory: publication supports its separate bounded retry budget while stream limits remain short');
+
+  for (const readiness of ['running', 'degraded-reachable']) {
+    const published = service({ readiness });
+    fixture = configure({ listen: () => published });
+    node = await createTorJsOnionNode(options);
+    const listener = await node.listen({ port: 80, maximumStreams: 4, deadlineMs: 30 });
+    check(listener.readiness === readiness, 'startup degradation is exposed without relabeling');
+    published.readiness = 'broken';
+    check(listener.readiness === readiness, 'readiness is a captured startup snapshot, not a live health claim');
+    listener.close(); node.close();
+  }
+  for (const readiness of [undefined, 'bootstrapping', 'degraded-unreachable', 'recovering', 'broken', 'shutdown', 'unknown']) {
+    const unavailable = service({ readiness });
+    fixture = configure({ listen: () => unavailable });
+    node = await createTorJsOnionNode(options);
+    await failure(() => node.listen({ port: 80, maximumStreams: 4, deadlineMs: 30 }));
+    check(fixture.closed === 1 && unavailable.closed === 1 && unavailable.freed === 1,
+      'unavailable or unknown service status closes and frees its handle');
+  }
+  const throwingStatus = service();
+  Object.defineProperty(throwingStatus, 'readiness', { get() { throw new Error('private service status'); } });
+  fixture = configure({ listen: () => throwingStatus });
+  node = await createTorJsOnionNode(options);
+  await failure(() => node.listen({ port: 80, maximumStreams: 4, deadlineMs: 30 }));
+  check(fixture.closed === 1 && throwingStatus.closed === 1 && throwingStatus.freed === 1,
+    'status getter errors remain coarse and dispose the service');
+  passed.push('scripted Tor factory: fully reachable readiness snapshots preserve degradation and reject all unavailable states');
 
   for (const invalid of [{ host: '127.0.0.1' }, { port: 81 }]) {
     const bad = service(invalid); fixture = configure({ listen: () => bad });

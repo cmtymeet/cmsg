@@ -29,9 +29,13 @@ publisher allows up to 300 seconds for an individual directory-upload retry
 episode and reports the completed batch together. The public-network fixture
 explicitly supplies 420000 ms for publication, allowing bounded startup and
 retry time. That is a test setting, not an implicit application default. Tune
-the caller's publication budget from cold-start duration and timeout rates;
-the service must still reach Arti's `Running` state. Stream deadlines remain
-independent and at most 60000 ms.
+the caller's publication budget from cold-start duration and timeout rates.
+Readiness uses Arti's documented `is_fully_reachable()` predicate: `Running`
+or `DegradedReachable`. The listener exposes a fixed `readiness` snapshot of
+`running` or `degraded-reachable`; the latter means reduced redundancy and
+must not be reported as full publication. This startup snapshot is not a
+continuing availability guarantee. Stream deadlines remain independent and
+at most 60000 ms.
 
 ## Fixed bounds and missing controls
 
@@ -51,7 +55,8 @@ current live adapter does not retry canceled application deliveries offline.
 
 ## Metrics for choosing future settings
 
-Measure locally first: bootstrap and handshake duration histograms, stream
+Measure locally first: bootstrap, onion-publication and handshake duration
+histograms, degraded-reachable startup counts, stream
 operation timeouts, active stream counts, checkpoint size/write latency, CAS
 conflict counts, canceled-unconfirmed counts and aggregate ACK delay. Keep
 transport acceptance distinct from authenticated delivery and accounting

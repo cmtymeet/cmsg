@@ -145,11 +145,15 @@ export async function runTorRuntimeContract() {
     }
     const publicationDeadlineMs = publicNetwork ? 420_000 : 60_000;
     progress.publicationDeadlineMs = publicationDeadlineMs;
+    progress.serviceReadiness = [];
     async function publish(index) {
       stage(`service-publication-${index}`);
       try {
         const service = await bounded(clients[index].hostOnion(80, 4, publicationDeadlineMs), publicationDeadlineMs + 5_000);
         services.push(service);
+        const readiness = service.readiness;
+        check(readiness === 'running' || readiness === 'degraded-reachable', 'actual Wasm reports its accepted readiness snapshot');
+        progress.serviceReadiness.push({ service: index, readiness });
         new BrowserOnionEndpoint(service.host, service.port).free();
       } catch (error) {
         const label = String(error);
@@ -220,6 +224,7 @@ export async function runTorRuntimeContract() {
     stage('complete');
     return { network: progress.network, testNetworkOnly: !publicNetwork,
       phaseDurationsMs: progress.phaseDurationsMs,
+      serviceReadiness: progress.serviceReadiness,
       topology: 'native C Tor client connects to browser-owned onion; MLS binary both directions',
       nativePeer: nativeEvidence, passed };
   } finally {

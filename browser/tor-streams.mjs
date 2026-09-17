@@ -111,7 +111,12 @@ export async function createTorJsOnionNode({ gateway, storage, bootstrapDeadline
       const service = await beforeDeadline(() => client.hostOnion(port, maximumStreams, deadlineMs), deadlineMs, close, dispose);
       if (closed) { dispose(service); throw failed(); }
       let endpoint;
-      try { endpoint = new BrowserOnionEndpoint(service.host, service.port); }
+      let readiness;
+      try {
+        readiness = service.readiness;
+        if (readiness !== 'running' && readiness !== 'degraded-reachable') throw failed();
+        endpoint = new BrowserOnionEndpoint(service.host, service.port);
+      }
       catch { dispose(service); close(); throw failed(); }
       const host = endpoint.host;
       const actualPort = endpoint.port;
@@ -120,6 +125,7 @@ export async function createTorJsOnionNode({ gateway, storage, bootstrapDeadline
       let listening = true;
       listener = {
         host, port: actualPort,
+        get readiness() { return readiness; },
         async accept() {
           if (closed || !listening) throw failed();
           try {

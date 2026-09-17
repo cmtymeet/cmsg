@@ -53,8 +53,11 @@ uploads finish (`publish/reactor.rs:130`, `:382`, `:1672`, `:2130`). A single
 recovering upload can therefore keep the service bootstrapping past 60 seconds
 while other uploads succeed. The public budget allows that retry episode plus
 60 seconds each for upload scheduling and startup. It guarantees no success:
-the wrapper still requires strict `Running`, full vanguards and subsequent
-peer reachability. Stream connect/accept/read/write limits remain 60,000 ms.
+the wrapper requires Arti's `is_fully_reachable()` predicate (`Running` or
+`DegradedReachable`), full vanguards and subsequent peer reachability. The
+listener exposes the startup state so reduced redundancy remains visible;
+this snapshot does not guarantee continuing availability. Stream
+connect/accept/read/write limits remain 60,000 ms.
 
 Both supervisors terminate their owned process groups even when a leader
 already exited. They retain the leader unreaped until cleanup to prevent PID

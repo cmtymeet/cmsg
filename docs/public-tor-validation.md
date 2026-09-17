@@ -38,8 +38,11 @@ without changing public directory configuration, vanguards or Tor behavior.
 Its artifacts use `tor-public-diagnostics` instead of `tor-public`.
 Publication has its own explicit 420-second test budget; individual stream
 operations remain limited to 60 seconds. Arti's directory-upload retry episode
-can itself last 300 seconds. Both services must reach `Running`; a longer wait
-does not treat degraded publication as success. See [operational tuning](tuning.md).
+can itself last 300 seconds. Both services must satisfy Arti's documented
+`is_fully_reachable()` predicate (`Running` or `DegradedReachable`); every
+service's startup readiness is recorded explicitly. Reduced redundancy is
+visible, and no other state qualifies. Successful authenticated exchange is
+still required independently of readiness. See [operational tuning](tuning.md).
 
 ## Scope
 
