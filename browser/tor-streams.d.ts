@@ -14,6 +14,8 @@ export interface BrowserOnionListener {
 }
 export interface BrowserOnionNode {
   connect(host: string, port: number): Promise<OnionFramedStream>;
+  /** Publication deadline: integer 1..600000 ms. Strict Arti Running is required;
+   * accept/read/write retain the independently configured operation deadline. */
   listen(options: { port: number; maximumStreams: number; deadlineMs: number }): Promise<BrowserOnionListener>;
   close(): void;
 }
@@ -22,5 +24,6 @@ export function createTorJsOnionNode(options: {
   gateway: string | string[];
   storage?: TorStorage;
   bootstrapDeadlineMs: number;
+  /** Stream operations only: integer 1..60000 ms. */
   operationDeadlineMs: number;
 }): Promise<BrowserOnionNode>;

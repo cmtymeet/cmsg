@@ -37,13 +37,24 @@ separate test-network stage and signed fixture authorities.
 instrumentation with the public `service` stage. This source option does not
 enable `browser-test-network`, injected authorities or network overrides; the
 source receipt records `serviceDiagnostics` separately from `testNetworkOnly`.
-It changes diagnostic labels only and retains the 60-second service readiness
+It changes diagnostic labels only and preserves the selected service readiness
 bound. The current service's IPT/publisher states are reported alongside
 runtime-wide last-error/upload categories, which can describe another service.
 No identifiers, addresses, keys or raw underlying error strings are included.
 The shared contract performs native MLS exchange with the first service before
 publishing the second, retaining that evidence if later publication fails;
 overall success still requires both services and every transport assertion.
+
+Publication has a separate explicit deadline of 1..600,000 ms. The public
+contract selects 420,000 ms; the private contract retains 60,000 ms. The pinned
+Arti publisher permits 300 seconds of retry per onion directory, with at least
+30 seconds per attempt, and reports a period's results only after all its
+uploads finish (`publish/reactor.rs:130`, `:382`, `:1672`, `:2130`). A single
+recovering upload can therefore keep the service bootstrapping past 60 seconds
+while other uploads succeed. The public budget allows that retry episode plus
+60 seconds each for upload scheduling and startup. It guarantees no success:
+the wrapper still requires strict `Running`, full vanguards and subsequent
+peer reachability. Stream connect/accept/read/write limits remain 60,000 ms.
 
 Both supervisors terminate their owned process groups even when a leader
 already exited. They retain the leader unreaped until cleanup to prevent PID

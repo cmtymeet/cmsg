@@ -32,6 +32,9 @@ export async function runTorNodeContract() {
   for (const gateway of [undefined, [], [undefined], new Array(1), '', [1]]) {
     await failure(() => createTorJsOnionNode({ ...options, gateway }), 'cmsg:InvalidState');
   }
+  for (const operationDeadlineMs of [60_001, 420_000, 600_000]) {
+    await failure(() => createTorJsOnionNode({ ...options, operationDeadlineMs }), 'cmsg:InvalidState');
+  }
   check(fixture.constructed === 0, 'invalid configuration does not construct a client');
   for (const [behavior, expected] of [
     [() => false, 'cmsg:TorOnionSupportRequired'],
@@ -95,6 +98,24 @@ export async function runTorNodeContract() {
   delayed.resolve(lateRaw); await tick();
   check(fixture.closed === 1 && lateRaw.closed === 1 && lateRaw.freed === 1, 'late dial result is disposed');
   passed.push('scripted Tor factory: dial failure or deadline cannot retry and late streams are disposed');
+
+  for (const publicationDeadline of [420_000, 600_000]) {
+    let acceptDeadline;
+    const published = service({ accept: async deadline => { acceptDeadline = deadline; return raw(); } });
+    fixture = configure({ listen: () => published });
+    node = await createTorJsOnionNode(options);
+    for (const deadlineMs of [0, -1, 1.5, NaN, Infinity, 600_001]) {
+      await failure(() => node.listen({ port: 80, maximumStreams: 4, deadlineMs }), 'cmsg:InvalidState');
+    }
+    check(fixture.calls.length === 0, 'invalid publication budgets never reach TorJS or consume the launch');
+    const listener = await node.listen({ port: 80, maximumStreams: 4, deadlineMs: publicationDeadline });
+    check(JSON.stringify(fixture.calls) === JSON.stringify([['listen', 80, 4, publicationDeadline]]),
+      'explicit publication budget reaches TorJS without a stream-deadline clamp');
+    const accepted = await listener.accept();
+    check(acceptDeadline === options.operationDeadlineMs, 'long publication budget never extends stream acceptance');
+    accepted.close(); listener.close(); node.close();
+  }
+  passed.push('scripted Tor factory: publication supports its separate bounded retry budget while stream limits remain short');
 
   for (const invalid of [{ host: '127.0.0.1' }, { port: 81 }]) {
     const bad = service(invalid); fixture = configure({ listen: () => bad });

@@ -134,10 +134,21 @@ export async function runTorRuntimeContract() {
     check((await (await fetch('/__canary', { cache: 'no-store' })).json()).connections === 0,
       'invalid contact routes did not reach the canary');
     passed.push('actual Wasm rejects IP, URL, malformed onion and injected route inputs before connection');
+    stage('wasm-publication-deadline-validation');
+    for (const deadline of [0, -1, 0.5, NaN, Infinity, 600_001]) {
+      let rejected = false;
+      try {
+        const service = await bounded(clients[0].hostOnion(80, 4, deadline), 2_000);
+        service.close(); service.free();
+      } catch (error) { rejected = String(error) === 'tor-js:OnionService'; }
+      check(rejected, 'actual Wasm rejects invalid publication deadline before launch');
+    }
+    const publicationDeadlineMs = publicNetwork ? 420_000 : 60_000;
+    progress.publicationDeadlineMs = publicationDeadlineMs;
     async function publish(index) {
       stage(`service-publication-${index}`);
       try {
-        const service = await bounded(clients[index].hostOnion(80, 4, 60_000), 65_000);
+        const service = await bounded(clients[index].hostOnion(80, 4, publicationDeadlineMs), publicationDeadlineMs + 5_000);
         services.push(service);
         new BrowserOnionEndpoint(service.host, service.port).free();
       } catch (error) {
@@ -151,6 +162,7 @@ export async function runTorRuntimeContract() {
       }
     }
     await publish(0);
+    passed.push('actual Wasm rejects invalid publication budgets and preserves the valid one-service launch');
     stage('native-peer-connection');
     const incoming = services[0].accept(60_000);
     const native = fetch('/__native-peer', { method: 'POST', headers: { 'content-type': 'application/json' },

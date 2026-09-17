@@ -21,7 +21,7 @@ import zipfile
 from runtime_process import poll_child, stop_child
 
 BOOTSTRAP_SECONDS = 1200
-DRIVER_SECONDS = 1000
+DRIVER_SECONDS = 2000
 CONSENSUS_LIMIT = 32 * 1024 * 1024
 
 
@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix=".public-tor-", dir=artifact.parent) as 
                           "kps_key_file": str(temporary / "ephemeral-kps.key"), "keccak_dir": "",
                           "advertised_addresses": ["127.0.0.1"], "tunnel_max": 128,
                           "tunnel_per_ip": 128, "tunnel_idle_timeout": 300,
-                          "tunnel_max_lifetime": 1200}
+                          "tunnel_max_lifetime": 2300}
         config_path = temporary / "gateway.json"
         config_path.write_text(json.dumps(gateway_config))
         environment = {**os.environ, "XDG_DATA_HOME": str(temporary / "xdg-data"),

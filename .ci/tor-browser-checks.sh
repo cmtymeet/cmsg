@@ -112,11 +112,13 @@ PY
   export TORJS_DIST="$scratch/source/tor-js/dist"
   export TOR_RUNTIME_ARTIFACT="$artifact_dir/runtime"
   fixture=browser/upstream/runtime-fixture.py
+  fixture_seconds=3000
   if test "$TOR_NETWORK" = public; then
     fixture=browser/upstream/public-runtime-fixture.py
+    fixture_seconds=3300
   fi
   # Each fixture also enforces its own phase bounds and owns all child cleanup.
-  timeout --kill-after=40 3000 "${fixture_tools[2]}" "$fixture" \
+  timeout --kill-after=40 "$fixture_seconds" "${fixture_tools[2]}" "$fixture" \
     2>&1 | tee "$artifact_dir/runtime/network.log" || result=$?
   (cd "$artifact_dir/runtime" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 fi

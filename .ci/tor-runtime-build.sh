@@ -29,6 +29,12 @@ timeout 1800 cargo test --locked --manifest-path "$torjs/Cargo.toml" \
   2>&1 | tee "$artifact/gateway-config-tests.log"
 timeout 1800 cargo build --locked --target wasm32-unknown-unknown --lib
 "$CMSG_BINDGEN_BINARY" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg cmsg
+if test "${TOR_NETWORK:-private}" = public; then
+  # Reuse the generated cmsg module for its browser/factory regressions before
+  # starting the expensive public network fixture; no duplicate Wasm build.
+  BROWSER_EVIDENCE="$artifact/cmsg-browser-evidence.json" \
+    timeout 300 node .ci/browser-check.mjs
+fi
 timeout 1800 cargo build --locked --example tor_browser_peer
 (
   cd "$torjs"

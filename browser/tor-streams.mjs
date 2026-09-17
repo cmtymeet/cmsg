@@ -105,7 +105,7 @@ export async function createTorJsOnionNode({ gateway, storage, bootstrapDeadline
     },
     async listen({ port, maximumStreams, deadlineMs } = {}) {
       if (closed || listener || !bounded(port, 65535) || !bounded(maximumStreams, 32)
-          || !bounded(deadlineMs, 60_000)) throw new Error('cmsg:InvalidState');
+          || !bounded(deadlineMs, 600_000)) throw new Error('cmsg:InvalidState');
       // Reserve the single launch before awaiting to prevent concurrent launch.
       listener = { close: () => {} };
       const service = await beforeDeadline(() => client.hostOnion(port, maximumStreams, deadlineMs), deadlineMs, close, dispose);

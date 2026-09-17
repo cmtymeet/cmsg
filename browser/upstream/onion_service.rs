@@ -116,7 +116,9 @@ impl TorClient {
         let launch: Result<(BrowserOnionService, u32), JsValue> = (|| {
             let port = integer(port, 65535)? as u16;
             let maximum_streams = integer(maximum_streams, 32)? as usize;
-            let deadline = integer(deadline_ms, 60000)?;
+            // Publication can include Arti's five-minute HSDir retry episode.
+            // This independent bound does not change stream/accept deadlines.
+            let deadline = integer(deadline_ms, 600000)?;
             let client = self.inner.as_ref().ok_or_else(failure)?;
             if self.onion_service_started.replace(true) { return Err(failure()); }
             let config = OnionServiceConfig::builder()

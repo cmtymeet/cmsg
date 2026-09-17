@@ -45,10 +45,12 @@ diff --git a/crates/tor-js-wasm/src/onion_service.rs b/crates/tor-js-wasm/src/on
  fn integer(value: f64, maximum: u32) -> Result<u32, JsValue> {
      if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > f64::from(maximum) {
          return Err(failure());
-@@ -117,14 +154,14 @@
+@@ -117,16 +154,16 @@
              let port = integer(port, 65535)? as u16;
              let maximum_streams = integer(maximum_streams, 32)? as usize;
-             let deadline = integer(deadline_ms, 60000)?;
+             // Publication can include Arti's five-minute HSDir retry episode.
+             // This independent bound does not change stream/accept deadlines.
+             let deadline = integer(deadline_ms, 600000)?;
 -            let client = self.inner.as_ref().ok_or_else(failure)?;
 -            if self.onion_service_started.replace(true) { return Err(failure()); }
 +            let client = self.inner.as_ref().ok_or_else(|| stage_failure("client-closed"))?;
@@ -66,7 +68,7 @@ diff --git a/crates/tor-js-wasm/src/onion_service.rs b/crates/tor-js-wasm/src/on
              // Unlike upstream's convenience helper, keep the number of pending
              // rendezvous handshakes finite. Arti still validates every request.
              let requests = rendezvous.flat_map_unordered(Some(maximum_streams), |request| {
-@@ -145,11 +182,11 @@
+@@ -147,11 +184,11 @@
              let (service, deadline) = launch?;
              let ready = async {
                  loop {
@@ -81,7 +83,7 @@ diff --git a/crates/tor-js-wasm/src/onion_service.rs b/crates/tor-js-wasm/src/on
                          _ => (),
                      }
                      TimeoutFuture::new(100).await;
-@@ -157,7 +194,7 @@
+@@ -159,7 +196,7 @@
              }.boxed_local();
              let outcome = match select(ready, TimeoutFuture::new(deadline).boxed_local()).await {
                  Either::Left((result, _)) => result,

@@ -18,6 +18,8 @@ const nativeSocks = process.env.TOR_NATIVE_SOCKS;
 if (!process.env.TORJS_DIST || !fixturePath || !nativeBinary || !nativeSocks) throw new Error('runtime fixture paths required');
 const fixture = JSON.parse(await readFile(fixturePath, 'utf8'));
 const network = fixture.network === 'public' ? 'public' : 'private';
+// Public service publication includes Arti's bounded descriptor-upload retries.
+const contractDeadlineMs = network === 'public' ? 1_900_000 : 900_000;
 let nativeStarted = false;
 let nativeChild;
 let nativeClosed;
@@ -180,7 +182,7 @@ try {
     awaitPromise: true, returnByValue: true,
   });
   const result = await Promise.race([running, new Promise((_, reject) => {
-    deadline = setTimeout(() => reject(new Error('Browser contract deadline exceeded')), 900_000);
+    deadline = setTimeout(() => reject(new Error('Browser contract deadline exceeded')), contractDeadlineMs);
   })]);
   if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
   if (!result.result || !('value' in result.result)) throw new Error('Browser contract returned no evidence');

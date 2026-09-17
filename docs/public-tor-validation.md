@@ -33,6 +33,14 @@ snapshot documented in [the lock provenance](../browser/upstream/locks/README.md
 It does not perform a fresh dependency upgrade. CI artifacts distinguish
 public-network results from the signed private-network fixture.
 
+An explicit `TOR_DIAGNOSTICS=1` build adds fixed service-status/error categories
+without changing public directory configuration, vanguards or Tor behavior.
+Its artifacts use `tor-public-diagnostics` instead of `tor-public`.
+Publication has its own explicit 420-second test budget; individual stream
+operations remain limited to 60 seconds. Arti's directory-upload retry episode
+can itself last 300 seconds. Both services must reach `Running`; a longer wait
+does not treat degraded publication as success. See [operational tuning](tuning.md).
+
 ## Scope
 
 A passing run demonstrates interoperability on the public network for its
@@ -45,6 +53,13 @@ leaks. The gateway can observe the client address and traffic timing/volume.
 The native participant is an onion client in this test; the browser owns the
 onion service. Native onion hosting has separate earlier experiment evidence.
 The fixture does not deploy a service or publish the experimental package.
+
+Long-running publication has a separate pinned-upstream code-review finding:
+`tor-hsservice/src/publish/reactor.rs` returns from its time-period loop when
+one period has no dirty directories, potentially skipping a later period
+that needs reupload. This is not the initial-publication timeout observed in
+these runs and is not exercised by this short exchange. It remains follow-up
+work before claiming long-running service reliability.
 
 ## Result
 
