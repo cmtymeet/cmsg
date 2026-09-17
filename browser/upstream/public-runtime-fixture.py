@@ -99,7 +99,10 @@ def save_receipt():
     (artifact / "public-network-provenance.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
-with tempfile.TemporaryDirectory(prefix="cmsg-public-tor-") as temporary:
+# Arti checks the entire ancestor chain. The worker's shared /tmp is writable
+# by other users, so retain the normal permission checks under the owned CI
+# artifact tree. The private temporary child is removed before hashing outputs.
+with tempfile.TemporaryDirectory(prefix=".public-tor-", dir=artifact) as temporary:
     temporary = Path(temporary)
     native = gateway = driver = None
     native_log = temporary / "native-tor.log"
