@@ -95,6 +95,7 @@ def main():
         overlays.append(("onion_stream.rs", tor_js / "crates/tor-js-wasm/src/onion_stream.rs"))
     if stage in {"service", "test-network"}:
         patches.extend([(arti, "arti-browser-service.patch"), (tor_js, "tor-js-onion-service.patch")])
+        patches.append((arti, "arti-publisher-renewal.patch"))
         patches.append((tor_js, "tor-js-full-vanguards.patch"))
         overlays.extend([
             ("state_dir_wasm.rs", arti / "crates/tor-persist/src/state_dir_wasm.rs"),

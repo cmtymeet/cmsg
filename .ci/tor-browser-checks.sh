@@ -70,6 +70,9 @@ if test "$TOR_STAGE" = service || test "$TOR_STAGE" = test-network; then
   cp "$scratch/source/arti/Cargo.lock" "$artifact_dir/arti-Cargo.lock"
   timeout 1800 cargo test --locked --manifest-path "$arti_manifest" \
     -p tor-persist --features state-dir state_dir_wasm_tests -- --test-threads=2 || result=$?
+  if test "$result" = 0; then
+    bash .ci/tor-publisher-checks.sh "$arti_manifest" "$artifact_dir" || result=$?
+  fi
 fi
 if test "${RUN_RUNTIME:-0}" = 1 && test "$result" = 0; then
   if test "$TOR_NETWORK" = public; then
@@ -122,6 +125,6 @@ PY
     2>&1 | tee "$artifact_dir/runtime/network.log" || result=$?
   (cd "$artifact_dir/runtime" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 fi
-(cd "$artifact_dir" && sha256sum source-application.json *Cargo.lock > SHA256SUMS)
+(cd "$artifact_dir" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 printf 'Patched upstream validation status: %s\n' "$result"
 exit "$result"
