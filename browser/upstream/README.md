@@ -7,6 +7,13 @@ The stock `tor-js@0.4.1` npm artifact configures `arti-client` with
 
 ## Public-network runtime mode
 
+The actual public-network contract passed [Crow run 84](https://crow.corbet.ch/repos/10/pipeline/84)
+at cmsg `d39022b35ebe4a1bc2569acaa5f7ac2f206b29c3` on 2026-09-17.
+Both browser-owned services reported `running`; nine checks include public
+browser/browser framing and native/browser MLS exchange with replay rejection.
+See the [public validation record](../../docs/public-tor-validation.md) for
+the diagnostic build mode, measured timings, artifact hashes and limits.
+
 `TOR_NETWORK=public TOR_STAGE=service RUN_RUNTIME=1` selects
 `public-runtime-fixture.py` after the pinned service package build. It starts
 one disposable native C Tor client and a separate KPS gateway using the public
@@ -113,7 +120,8 @@ The experimental service overlay uses per-session onion keys and in-memory
 service state. Every restart creates fresh service/introduction keys; the wrapper
 offers no independent key restore. Permanent cmsg identity remains a different
 member root key. Compilation and native state tests have passed as detailed
-below; browser service reachability passed the isolated runtime contract in Crow run 68.
+below; browser service reachability passed the isolated runtime contract in
+Crow run 68 and the public-network contract in Crow run 84.
 
 ## Raw stream stage
 
@@ -131,6 +139,8 @@ onion service launched, then reached the 60-second publication deadline.
 Crow run 68 at `b23221271f7170a4f665e3834f4302a4a1a33ff0` passed
 actual browser onion publication, dial/accept and browser/native MLS transport
 on the isolated signed network after the fixture initialization corrections.
+Crow run 84 at `d39022b35ebe4a1bc2569acaa5f7ac2f206b29c3` passed
+the public-network counterpart with the explicit service diagnostics build.
 The stock dependency is not enabled by the cmsg production adapter.
 
 `connectOnion(host, port, deadlineMs)` accepts only canonical checksum-valid
@@ -187,7 +197,8 @@ IDs as the upstream provenance; the verified archive IDs remain in its output.
 
 The service uses a fresh ephemeral Arti keystore. `hostOnion(port,
 maximumStreams, deadlineMs)` permits one launch per TorClient lifetime, waits
-for Arti's running status and returns a peer onion plus `accept(deadlineMs)`.
+for Arti's fully reachable status and returns a peer onion,
+a `readiness` startup snapshot and `accept(deadlineMs)`.
 Only the configured virtual port is accepted. Pending rendezvous handshakes
 and accepted streams are bounded, and closing a service cancels its pending
 accept and accepted streams. Closing the client also closes raw streams and
@@ -197,7 +208,7 @@ that replay-store port is unfinished; it does not silently emulate its storage.
 
 Browser restart must create a fresh TorClient and onion; permanent member
 identity and private contact policy are recovered separately by cmsg. Arti's
-running status and native state tests do not establish browser reachability.
+readiness status and native state tests do not establish browser reachability.
 That requires genuine Tor circuits between a browser service and a separate
 native peer using the generated artifact and explicitly configured test gateway.
 
