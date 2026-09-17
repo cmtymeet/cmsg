@@ -134,27 +134,23 @@ export async function runTorRuntimeContract() {
     check((await (await fetch('/__canary', { cache: 'no-store' })).json()).connections === 0,
       'invalid contact routes did not reach the canary');
     passed.push('actual Wasm rejects IP, URL, malformed onion and injected route inputs before connection');
-    for (let index = 0; index < clients.length; index++) {
+    async function publish(index) {
       stage(`service-publication-${index}`);
-      services.push(await bounded(clients[index].hostOnion(80, 4, 60_000), 65_000));
+      try {
+        const service = await bounded(clients[index].hostOnion(80, 4, 60_000), 65_000);
+        services.push(service);
+        new BrowserOnionEndpoint(service.host, service.port).free();
+      } catch (error) {
+        const label = String(error);
+        // Diagnostic builds return static categories only. Never retain an
+        // arbitrary upstream exception as service diagnostic metadata.
+        if (/^tor-js:OnionService:[a-z0-9=:/-]{1,512}$/.test(label)) {
+          progress.serviceDiagnostic = label;
+        }
+        throw error;
+      }
     }
-    check(services[0].host !== services[1].host, 'distinct ephemeral onion identities');
-    for (const service of services) new BrowserOnionEndpoint(service.host, service.port).free();
-    passed.push('two browser-owned onion services published with full vanguards');
-    stage('browser-onion-stream');
-    const [dialled, accepted] = await bounded(Promise.all([
-      clients[0].connectOnion(services[1].host, 80, 60_000), services[1].accept(60_000),
-    ]), 65_000);
-    const left = new OnionFramedStream(dialled, 60_000);
-    const right = new OnionFramedStream(accepted, 60_000);
-    framed.push(left, right);
-    await left.send(new Uint8Array([0, 128, 255, 0, 9]));
-    check(same(await right.receive(), [0, 128, 255, 0, 9]), 'browser outgoing onion bytes');
-    await right.send(new Uint8Array([253, 129, 0, 1]));
-    check(same(await left.receive(), [253, 129, 0, 1]), 'browser return onion bytes');
-    left.close(); right.close();
-    passed.push('actual browser onion dial/accept and bidirectional cmsg framing');
-
+    await publish(0);
     stage('native-peer-connection');
     const incoming = services[0].accept(60_000);
     const native = fetch('/__native-peer', { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -183,7 +179,25 @@ export async function runTorRuntimeContract() {
     const nativeEvidence = await bounded(native, 125_000);
     check(nativeEvidence.nativeFramedStream && nativeEvidence.rootAuthorizedMlsBinaryBothDirections, 'native process evidence');
     peer.close();
+    progress.nativePeer = nativeEvidence;
     passed.push('browser/native Tor FramedStream and root-authorized MLS binary both directions, replay rejected');
+    await publish(1);
+    check(services[0].host !== services[1].host, 'distinct ephemeral onion identities');
+    passed.push('two browser-owned onion services published with full vanguards');
+    stage('browser-onion-stream');
+    const [dialled, accepted] = await bounded(Promise.all([
+      clients[0].connectOnion(services[1].host, 80, 60_000), services[1].accept(60_000),
+    ]), 65_000);
+    const left = new OnionFramedStream(dialled, 60_000);
+    const right = new OnionFramedStream(accepted, 60_000);
+    framed.push(left, right);
+    await left.send(new Uint8Array([0, 128, 255, 0, 9]));
+    check(same(await right.receive(), [0, 128, 255, 0, 9]), 'browser outgoing onion bytes');
+    await right.send(new Uint8Array([253, 129, 0, 1]));
+    check(same(await left.receive(), [253, 129, 0, 1]), 'browser return onion bytes');
+    left.close(); right.close();
+    passed.push('actual browser onion dial/accept and bidirectional cmsg framing');
+
     stage('service-cancellation');
     const pending = services[0].accept(60_000);
     services[0].close();

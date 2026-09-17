@@ -33,6 +33,18 @@ onion service. Public success requires the actual runtime artifact; source
 preparation alone is not evidence. Private-network mode retains its existing
 separate test-network stage and signed fixture authorities.
 
+`TOR_DIAGNOSTICS=1` also permits the existing sanitized service/publisher
+instrumentation with the public `service` stage. This source option does not
+enable `browser-test-network`, injected authorities or network overrides; the
+source receipt records `serviceDiagnostics` separately from `testNetworkOnly`.
+It changes diagnostic labels only and retains the 60-second service readiness
+bound. The current service's IPT/publisher states are reported alongside
+runtime-wide last-error/upload categories, which can describe another service.
+No identifiers, addresses, keys or raw underlying error strings are included.
+The shared contract performs native MLS exchange with the first service before
+publishing the second, retaining that evidence if later publication fails;
+overall success still requires both services and every transport assertion.
+
 Both supervisors terminate their owned process groups even when a leader
 already exited. They retain the leader unreaped until cleanup to prevent PID
 reuse from authorizing an unrelated group. `python3 browser/upstream/runtime-process.test.py` checks an

@@ -6,6 +6,8 @@ python3 --version
 case "$TOR_STAGE" in client|streams|service|test-network) ;; *) exit 2 ;; esac
 export TOR_NETWORK="${TOR_NETWORK:-private}"
 case "$TOR_NETWORK" in public|private) ;; *) exit 2 ;; esac
+export TOR_DIAGNOSTICS="${TOR_DIAGNOSTICS:-0}"
+case "$TOR_DIAGNOSTICS" in 0|1) ;; *) exit 2 ;; esac
 artifact_suffix="$TOR_STAGE"
 if test "$TOR_NETWORK" = public; then
   test "$TOR_STAGE" = service
@@ -14,6 +16,7 @@ if test "$TOR_NETWORK" = public; then
   node --check browser/upstream/runtime-contract.mjs
   node --check browser/upstream/runtime-driver.mjs
 fi
+if test "$TOR_DIAGNOSTICS" = 1; then artifact_suffix="$artifact_suffix-diagnostics"; fi
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/tor-$artifact_suffix"
 mkdir -p "$artifact_dir"
 timeout 30 python3 browser/upstream/runtime-process.test.py \

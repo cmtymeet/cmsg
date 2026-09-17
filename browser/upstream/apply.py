@@ -70,6 +70,12 @@ def main():
         raise SystemExit("usage: apply.py TOR_JS_CHECKOUT ARTI_CHECKOUT STAGE; or apply.py --from-archives TOR_JS_TAR ARTI_TAR NEW_OUTPUT_DIR STAGE")
     if stage not in {"client", "streams", "service", "test-network"}:
         raise SystemExit("stage must be client, streams, service or test-network")
+    diagnostic_option = os.environ.get("TOR_DIAGNOSTICS", "0")
+    if diagnostic_option not in {"0", "1"}:
+        raise SystemExit("TOR_DIAGNOSTICS must be 0 or 1")
+    diagnostics = stage == "test-network" or diagnostic_option == "1"
+    if diagnostics and stage not in {"service", "test-network"}:
+        raise SystemExit("service diagnostics require the service or test-network stage")
     if archived:
         tor_js, arti = from_archives(sys.argv[2:4], sys.argv[4], manifest)
     else:
@@ -95,11 +101,13 @@ def main():
             ("onion_service.rs", tor_js / "crates/tor-js-wasm/src/onion_service.rs"),
         ])
     if stage == "test-network":
-        patches.extend([(tor_js, "tor-js-test-network.patch"), (arti, "arti-service-diagnostics.patch"),
+        patches.append((tor_js, "tor-js-test-network.patch"))
+        overlays.append(("test_network.rs", tor_js / "crates/tor-js-wasm/src/test_network.rs"))
+    if diagnostics:
+        patches.extend([(arti, "arti-service-diagnostics.patch"),
                         (arti, "arti-publisher-diagnostics.patch")])
         post_overlay_patches.append((tor_js, "tor-js-service-diagnostics.patch"))
         post_overlay_patches.append((tor_js, "tor-js-publisher-diagnostics.patch"))
-        overlays.append(("test_network.rs", tor_js / "crates/tor-js-wasm/src/test_network.rs"))
     for checkout, patch in patches:
         git(checkout, "apply", "--check", str(source / patch))
         git(checkout, "apply", str(source / patch))
@@ -134,6 +142,7 @@ def main():
     print(json.dumps({
         "stage": stage,
         "testNetworkOnly": stage == "test-network",
+        "serviceDiagnostics": diagnostics,
         "sourceMode": "verified git archives" if archived else "pinned git checkouts",
         "torJsRevision": manifest["torJs"]["revision"],
         "artiRevision": manifest["arti"]["revision"],

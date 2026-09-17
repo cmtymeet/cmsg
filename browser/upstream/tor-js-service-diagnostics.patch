@@ -6,7 +6,7 @@ diff --git a/crates/tor-js-wasm/src/onion_service.rs b/crates/tor-js-wasm/src/on
  
  fn failure() -> JsValue { JsValue::from_str("tor-js:OnionService") }
 +
-+// Only applied to the isolated test-network source stage. All labels are static;
++// Only applied to explicit diagnostic source builds. All labels are static;
 +// no error payloads, addresses, key values or filesystem paths are formatted.
 +fn stage_failure(stage: &'static str) -> JsValue {
 +    JsValue::from_str(&format!("tor-js:OnionService:{stage}"))
