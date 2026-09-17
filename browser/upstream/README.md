@@ -5,6 +5,41 @@ The stock `tor-js@0.4.1` npm artifact configures `arti-client` with
 `default-features = false` and only `experimental-api`. That does not include
 `onion-service-client`; browser HTTP fetch support alone is insufficient.
 
+## Public-network runtime mode
+
+`TOR_NETWORK=public TOR_STAGE=service RUN_RUNTIME=1` selects
+`public-runtime-fixture.py` after the pinned service package build. It starts
+one disposable native C Tor client and a separate KPS gateway using the public
+authorities. The browser receives no `testNetwork` option or directory/path
+overrides. `tor-js-full-vanguards.patch` explicitly selects full vanguards:
+the pinned Arti default is Lite and does not automatically escalate for hosts.
+
+`tor-js-gateway-bind.patch` adds a validated IP listener setting; this fixture
+uses `127.0.0.1`, independently of its advertised address. The gateway starts
+with empty task-owned cache/state, normal signature-verified directory sync,
+and local targets forbidden. It waits for its actual bootstrap archive; the
+fixture retains both gateway and native-client accepted public consensuses and
+requires validity through the bounded browser run. No `--no-sync`, synthetic
+authorities, network parameter overrides, host services or persistent keys
+are used in public mode.
+
+The shared browser contract checks local-target rejection with zero canary
+connections, exact non-relay rejection for a documentation-range address,
+two browser-owned onion services, browser/browser framing and a native C Tor
+client connecting to a browser onion for root-authorized MLS binary data in
+both directions. It records phase durations, rejects replay/malformed routes,
+and checks service cancellation. This topology does not test a native-hosted
+onion service. Public success requires the actual runtime artifact; source
+preparation alone is not evidence. Private-network mode retains its existing
+separate test-network stage and signed fixture authorities.
+
+Both supervisors terminate their owned process groups even when a leader
+already exited. They retain the leader unreaped until cleanup to prevent PID
+reuse from authorizing an unrelated group. `python3 browser/upstream/runtime-process.test.py` checks an
+orphaned descendant that ignores SIGTERM and requires bounded SIGKILL cleanup.
+Run this regression only on CI. Request interception remains tab HTTP evidence,
+not whole-process network confinement or a hostile-gateway resource audit.
+
 `tor-js-onion-client.patch` enables onion clients and vanguards, and exposes a
 capability marker through the actual Wasm module. cmsg checks that marker before
 creating a client. A marker proves which integration API was built; a real Tor

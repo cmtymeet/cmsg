@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only in the isolated CI source tree after apply.py's test-network stage.
+# Run only in the isolated CI source tree after apply.py's selected service stage.
 set -euo pipefail
 test "$#" = 2
 torjs="$(realpath "$1")"
@@ -10,14 +10,23 @@ artifact="$(realpath -m "$2")"
 test -x "$TOR_BINDGEN_BINARY"
 test -x "$CMSG_BINDGEN_BINARY"
 mkdir -p "$artifact"
+tor_features=()
+case "${TOR_NETWORK:-private}" in
+  private) tor_features=(--features browser-test-network) ;;
+  public) ;;
+  *) exit 2 ;;
+esac
 timeout 1800 cargo build --locked --manifest-path "$torjs/Cargo.toml" \
-  -p tor-js --features browser-test-network --target wasm32-unknown-unknown
+  -p tor-js "${tor_features[@]}" --target wasm32-unknown-unknown
 "$TOR_BINDGEN_BINARY" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/tor_js.wasm" \
   "$torjs/crates/tor-js-wasm/pkg" tor_js
 timeout 1800 cargo build --locked --manifest-path "$torjs/Cargo.toml" -p tor-js-gateway
 timeout 1800 cargo test --locked --manifest-path "$torjs/Cargo.toml" \
   -p tor-js-gateway tunnel::tests:: -- --nocapture \
   2>&1 | tee "$artifact/gateway-tunnel-tests.log"
+timeout 1800 cargo test --locked --manifest-path "$torjs/Cargo.toml" \
+  -p tor-js-gateway config::tests:: -- --nocapture \
+  2>&1 | tee "$artifact/gateway-config-tests.log"
 timeout 1800 cargo build --locked --target wasm32-unknown-unknown --lib
 "$CMSG_BINDGEN_BINARY" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/cmsg.wasm" browser/pkg cmsg
 timeout 1800 cargo build --locked --example tor_browser_peer
@@ -39,7 +48,7 @@ pathlib.Path('build.cmsg-experiment.mjs').write_text(source.replace(needle,
     '    // Experimental package: stock README size assertion is inapplicable.\n'))
 package = pathlib.Path('package.json')
 data = json.loads(package.read_text())
-data['version'] = '0.4.1-cmsg-fixture.' + sys.argv[1][:12]
+data['version'] = '0.4.1-cmsg-experiment.' + sys.argv[1][:12]
 package.write_text(json.dumps(data, indent=2) + '\n')
 PY
   npm_config_offline=true timeout 900 node build.cmsg-experiment.mjs

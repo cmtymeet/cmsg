@@ -80,7 +80,8 @@ def main():
         if git(checkout, "status", "--porcelain"):
             raise SystemExit(f"{section} checkout must be clean and isolated")
 
-    patches = [(tor_js, "tor-js-onion-client.patch"), (tor_js, "tor-js-gateway-response.patch")]
+    patches = [(tor_js, "tor-js-onion-client.patch"), (tor_js, "tor-js-gateway-response.patch"),
+               (tor_js, "tor-js-gateway-bind.patch")]
     post_overlay_patches = []
     overlays = []
     if stage in {"streams", "service", "test-network"}:
@@ -88,6 +89,7 @@ def main():
         overlays.append(("onion_stream.rs", tor_js / "crates/tor-js-wasm/src/onion_stream.rs"))
     if stage in {"service", "test-network"}:
         patches.extend([(arti, "arti-browser-service.patch"), (tor_js, "tor-js-onion-service.patch")])
+        patches.append((tor_js, "tor-js-full-vanguards.patch"))
         overlays.extend([
             ("state_dir_wasm.rs", arti / "crates/tor-persist/src/state_dir_wasm.rs"),
             ("onion_service.rs", tor_js / "crates/tor-js-wasm/src/onion_service.rs"),
