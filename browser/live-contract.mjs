@@ -15,17 +15,27 @@ function callerQueue() {
 function pair(guards=[]) {
  const sides=[{queue:[],wait:[],closed:false},{queue:[],wait:[],closed:false}];
  const endpoints=sides.map((self,index)=>({
-  pauseNext:false,failNext:false,release:undefined,captured:undefined,
+  pauseNext:false,failNext:false,release:undefined,writeReject:undefined,captured:undefined,
   async send(bytes) {
    if(this.failNext){this.failNext=false;throw new Error('scripted write failure');}
    this.captured=bytes.slice();
-   if(this.pauseNext){this.pauseNext=false;await new Promise(resolve=>{this.release=resolve;});}
+   if(this.pauseNext){
+    this.pauseNext=false;
+    try {
+     await new Promise((resolve,reject)=>{this.release=resolve;this.writeReject=reject;});
+    } finally {this.writeReject=undefined;}
+   }
    if(self.closed)throw new Error('scripted closed write');
    const other=sides[1-index];if(other.closed)throw new Error('scripted peer loss');
    const value=bytes.slice();const waiter=other.wait.shift();if(waiter)waiter.resolve(value);else other.queue.push(value);
   },
   receive() {if(guards[index]?.active)return Promise.reject(new Error('peer read held caller scheduler'));if(self.queue.length)return Promise.resolve(self.queue.shift());if(self.closed)return Promise.reject(new Error('scripted EOF'));return new Promise((resolve,reject)=>self.wait.push({resolve,reject}));},
-  close() {self.closed=true;for(const waiter of self.wait.splice(0))waiter.reject(new Error('scripted EOF'));},
+  close() {
+   self.closed=true;
+   const rejectWrite=this.writeReject;this.writeReject=undefined;
+   rejectWrite?.(new Error('scripted closed write'));
+   for(const waiter of self.wait.splice(0))waiter.reject(new Error('scripted EOF'));
+  },
  }));return endpoints;
 }
 export async function runLiveStreamContract(a,b,key,context,saveA,saveB,report=()=>{}) {
