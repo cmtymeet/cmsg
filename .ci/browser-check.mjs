@@ -11,7 +11,9 @@ import { resolve, join, extname, sep } from 'node:path';
 const root = resolve(process.cwd());
 const artifact = process.env.BROWSER_EVIDENCE;
 const binary = process.env.BROWSER_BIN;
+const buildProfile = process.env.BROWSER_BUILD_PROFILE;
 if (!binary || !artifact) throw new Error('BROWSER_BIN and BROWSER_EVIDENCE are required');
+if (buildProfile && !['debug', 'release'].includes(buildProfile)) throw new Error('Invalid browser build profile');
 const profileModules = new Map();
 let profileSource;
 if (process.env.CFRM_SOURCE_ARCHIVE || process.env.CFRM_SOURCE_COMMIT || process.env.CFRM_SOURCE_SHA256) {
@@ -153,7 +155,7 @@ try {
   if (!result.result || !('value' in result.result)) throw new Error('Browser contract returned no evidence');
   if (forbiddenRequests.length) throw new Error(`Unexpected external requests: ${JSON.stringify(forbiddenRequests)}`);
   const evidence = { source: process.env.CI_COMMIT_SHA, browser: metadata.Browser,
-    runtime: process.version, profileSource, contract: result.result.value, unexpectedExternalRequests: forbiddenRequests };
+    runtime: process.version, buildProfile, profileSource, contract: result.result.value, unexpectedExternalRequests: forbiddenRequests };
   await writeFile(artifact, JSON.stringify(evidence, null, 2) + '\n');
   process.stdout.write(JSON.stringify(evidence) + '\n');
 } catch (error) {
@@ -177,7 +179,7 @@ try {
     }
   } catch { /* preserve the contract failure */ }
   finally { clearTimeout(snapshotDeadline); }
-  const failure = { source: process.env.CI_COMMIT_SHA, runtime: process.version, profileSource,
+  const failure = { source: process.env.CI_COMMIT_SHA, runtime: process.version, buildProfile, profileSource,
     status: 'failed', progress: progress ?? { phase: 'unavailable', passed: [] } };
   await writeFile(artifact + '.failure.json', JSON.stringify(failure, null, 2) + '\n').catch(() => {});
   process.stderr.write(JSON.stringify(failure) + '\n');
