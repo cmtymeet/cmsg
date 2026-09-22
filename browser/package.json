@@ -33,7 +33,7 @@
     "LICENSE.md"
   ],
   "peerDependencies": {
-    "tor-js": "0.4.1"
+    "tor-js": "0.4.1 || >=0.4.1-cmsg-experiment.0 <0.4.1"
   },
   "peerDependenciesMeta": {
     "tor-js": {
