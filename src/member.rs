@@ -257,6 +257,14 @@ impl Member {
         if credential_parts(&self.credential.credential)?.1.is_none() {
             return Err(Error::Admission);
         }
+        // Re-login can replay the exact still-valid certificate before the
+        // issuer has advanced either timestamp. The existing key, member and
+        // root checks above already authenticate it; retain the current
+        // credential instead of treating an identical retry as a downgrade.
+        if credential.credential == self.credential.credential {
+            self.member_id()?;
+            return Ok(());
+        }
         verify_renewal_advance(&self.credential.credential, &credential.credential)?;
         self.credential = credential;
         Ok(())

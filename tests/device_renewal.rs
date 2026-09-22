@@ -60,6 +60,34 @@ fn ungrouped_device_refreshes_expired_root_authorization_without_changing_key() 
 }
 
 #[test]
+fn ungrouped_device_accepts_identical_still_valid_refresh_retry_only() {
+    let time = Arc::new(Time(AtomicU64::new(100)));
+    let root = MemberIdentity::new("synthetic-community").unwrap();
+    let mut member = device(&root, &time, 200);
+    let key = member.chat_public_key();
+    let mut grant = common::grant(&key, 1);
+    grant.member_id = root.member_id().to_owned();
+    common::sign(&mut grant);
+    let authorization = root.authorize_device(&key, 1, 200).unwrap();
+
+    member
+        .refresh_device_admission(grant.clone(), authorization.clone(), 100)
+        .unwrap();
+    assert_eq!(member.member_id().unwrap(), root.member_id());
+
+    let wrong_root = MemberIdentity::new("synthetic-community").unwrap();
+    let wrong_authorization = wrong_root.authorize_device(&key, 1, 200).unwrap();
+    assert!(member
+        .refresh_device_admission(grant.clone(), wrong_authorization, 100)
+        .is_err());
+
+    time.0.store(200, Ordering::Relaxed);
+    assert!(member
+        .refresh_device_admission(grant, authorization, 200)
+        .is_err());
+}
+
+#[test]
 fn expired_device_authorization_renews_with_same_root_and_key_without_rotating_identity() {
     let time = Arc::new(Time(AtomicU64::new(100)));
     let alice_root = MemberIdentity::new("synthetic-community").unwrap();
