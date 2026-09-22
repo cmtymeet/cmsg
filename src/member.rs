@@ -198,6 +198,50 @@ impl Member {
         Ok(())
     }
 
+    /// Refresh the issuer and root-authorized certificates on an ungrouped
+    /// restored device. The stable member root and device signing key remain
+    /// unchanged; grouped members must use `renew_device_admission`, which
+    /// emits and durably persists an MLS update commit.
+    pub fn refresh_device_admission(
+        &mut self,
+        grant: AdmissionGrant,
+        device_authorization: DeviceAuthorization,
+        now: u64,
+    ) -> Result<(), Error> {
+        if self.group.is_some() {
+            return Err(Error::InvalidState);
+        }
+        let trust = self.trust.as_ref().ok_or(Error::Admission)?.clone();
+        let old_id = self.stored_member_id()?;
+        if verify_admission(&grant, &trust, &self.chat_public_key(), now)? != old_id {
+            return Err(Error::Admission);
+        }
+        crate::verify_device_authorization(
+            &device_authorization,
+            &trust.community_id,
+            &old_id,
+            &self.chat_public_key(),
+            now,
+        )?;
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(
+                serde_json::to_vec(&DeviceCredential {
+                    admission: grant,
+                    device_authorization,
+                })
+                .map_err(|_| Error::Admission)?,
+            )
+            .into(),
+            signature_key: self.chat_public_key().into(),
+        };
+        if credential_parts(&self.credential.credential)?.1.is_none() {
+            return Err(Error::Admission);
+        }
+        verify_renewal_advance(&self.credential.credential, &credential.credential)?;
+        self.credential = credential;
+        Ok(())
+    }
+
     pub(crate) fn admission_grant(&self) -> Result<AdmissionGrant, Error> {
         credential_grant(&self.credential.credential)
     }

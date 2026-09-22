@@ -197,6 +197,32 @@ impl BrowserMember {
             .map_err(js_error)
     }
 
+    /// Refresh an already-bound, ungrouped device after restoring it from
+    /// encrypted local state. Grouped members must use BrowserInbox's durable
+    /// MLS renewal method instead.
+    #[wasm_bindgen(js_name = refreshDeviceAdmission)]
+    pub fn refresh_device_admission(
+        &mut self,
+        grant_json: &str,
+        device_authorization_json: &str,
+    ) -> Result<(), JsValue> {
+        if grant_json.len() > MAX_WIRE_BYTES || device_authorization_json.len() > MAX_WIRE_BYTES {
+            return Err(js_error(Error::Admission));
+        }
+        let grant: AdmissionGrant =
+            serde_json::from_str(grant_json).map_err(|_| js_error(Error::Admission))?;
+        let device_authorization: DeviceAuthorization =
+            serde_json::from_str(device_authorization_json)
+                .map_err(|_| js_error(Error::Admission))?;
+        self.member
+            .refresh_device_admission(
+                grant,
+                device_authorization,
+                BrowserClock.now().map_err(js_error)?,
+            )
+            .map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = memberId)]
     pub fn member_id(&self) -> Result<String, JsValue> {
         self.member.member_id().map_err(js_error)
