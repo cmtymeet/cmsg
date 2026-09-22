@@ -1307,6 +1307,29 @@ impl BrowserInbox {
         })
         .await
     }
+
+    /// Apply a peer's authenticated same-device MLS admission renewal while
+    /// the local certificate is expired. The candidate inbox and member are
+    /// persisted atomically before either replaces the live handles; payload
+    /// messages and membership changes are rejected by the control boundary.
+    #[wasm_bindgen(js_name = receiveAdmissionRenewal)]
+    pub async fn receive_admission_renewal(
+        &mut self,
+        wire: &[u8],
+        key: &[u8],
+        context: &[u8],
+        persist: Function,
+    ) -> Result<(), JsValue> {
+        if wire.is_empty() || wire.len() > MAX_WIRE_BYTES {
+            return Err(js_error(Error::InvalidMessage));
+        }
+        let wrapping = wrapping_key(key)?;
+        self.update(key, context, &persist, |inbox, member| {
+            inbox.receive_admission_renewal(member, wire, &wrapping, context, |_| Ok(()))?;
+            Ok(((), Vec::new()))
+        })
+        .await
+    }
 }
 
 #[wasm_bindgen]

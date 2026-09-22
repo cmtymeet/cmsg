@@ -114,6 +114,26 @@ fn parse(wire: &[u8]) -> Result<MlsMessageIn, Error> {
     MlsMessageIn::tls_deserialize_exact(wire).map_err(|_| Error::InvalidMessage)
 }
 
+fn participant_device_keys(
+    group: &MlsGroup,
+    trust: &AdmissionTrust,
+    now: u64,
+) -> Result<BTreeSet<(String, Vec<u8>)>, Error> {
+    let mut participants = BTreeSet::new();
+    for participant in group.members() {
+        let member_id = verify_historical_credential(
+            &participant.credential,
+            &participant.signature_key,
+            trust,
+            now,
+        )?;
+        if !participants.insert((member_id, participant.signature_key.to_vec())) {
+            return Err(Error::Admission);
+        }
+    }
+    Ok(participants)
+}
+
 impl Member {
     pub fn new() -> Result<Self, Error> {
         Self::new_with_clock(Arc::new(crate::lifecycle::SystemClock))
@@ -631,7 +651,7 @@ impl Member {
     }
 
     pub fn receive(&mut self, wire: &[u8]) -> Result<Received, Error> {
-        self.process_incoming(wire, false, false, &BTreeSet::new())
+        self.process_incoming(wire, false, false, false, &BTreeSet::new())
     }
 
     pub(crate) fn receive_excluding(
@@ -639,7 +659,7 @@ impl Member {
         wire: &[u8],
         excluded: &BTreeSet<String>,
     ) -> Result<Received, Error> {
-        self.process_incoming(wire, false, false, excluded)
+        self.process_incoming(wire, false, false, false, excluded)
     }
 
     /// Decode the bounded internal contact envelope only inside the guarded
@@ -649,13 +669,13 @@ impl Member {
         wire: &[u8],
         excluded: &BTreeSet<String>,
     ) -> Result<Received, Error> {
-        self.process_incoming(wire, false, true, excluded)
+        self.process_incoming(wire, false, true, false, excluded)
     }
 
     /// Process only authenticated control while a local certificate is expired.
     /// Application messages are rejected without changing ratchets or history.
     pub fn receive_control(&mut self, wire: &[u8]) -> Result<(), Error> {
-        match self.process_incoming(wire, true, false, &BTreeSet::new())? {
+        match self.process_incoming(wire, true, false, false, &BTreeSet::new())? {
             Received::MembershipChanged => Ok(()),
             Received::Text(_)
             | Received::Bytes(_)
@@ -665,11 +685,21 @@ impl Member {
         }
     }
 
+    /// Receive only a same-device credential renewal, including while our
+    /// own certificate is expired. Generic control processing stays separate.
+    pub fn receive_admission_renewal(&mut self, wire: &[u8]) -> Result<(), Error> {
+        match self.process_incoming(wire, true, false, true, &BTreeSet::new())? {
+            Received::MembershipChanged => Ok(()),
+            _ => Err(Error::InvalidMessage),
+        }
+    }
+
     fn process_incoming(
         &mut self,
         wire: &[u8],
         control_only: bool,
         allow_policy: bool,
+        renewal_only: bool,
         excluded: &BTreeSet<String>,
     ) -> Result<Received, Error> {
         if control_only {
@@ -708,6 +738,11 @@ impl Member {
             _ => return Err(Error::Admission),
         };
         let trust = self.trust.as_ref().ok_or(Error::Admission)?;
+        let before_participants = if renewal_only {
+            participant_device_keys(current, trust, now)?
+        } else {
+            BTreeSet::new()
+        };
         let sender_credential = processed.credential().clone();
         let sender_id =
             verify_historical_credential(&sender_credential, &sender.signature_key, trust, now)?;
@@ -745,6 +780,16 @@ impl Member {
                 }
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
+                if renewal_only {
+                    let update = commit
+                        .update_path_leaf_node()
+                        .ok_or(Error::InvalidMessage)?;
+                    if commit.queued_proposals().next().is_some()
+                        || update.credential() == &sender_credential
+                    {
+                        return Err(Error::InvalidMessage);
+                    }
+                }
                 let currently_authorized =
                     verify_credential(&sender_credential, &sender.signature_key, trust, now)
                         .is_ok();
@@ -801,6 +846,11 @@ impl Member {
                     .merge_staged_commit(&working.0, *commit)
                     .map_err(|_| Error::InvalidMessage)?;
                 verify_group_history(&group, trust, now)?;
+                if renewal_only
+                    && participant_device_keys(&group, trust, now)? != before_participants
+                {
+                    return Err(Error::Admission);
+                }
                 for participant in group.members() {
                     let identity = verify_historical_credential(
                         &participant.credential,
