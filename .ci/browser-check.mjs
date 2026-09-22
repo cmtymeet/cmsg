@@ -134,7 +134,7 @@ try {
   if (!loaded.has(navigation.loaderId)) throw new Error('Browser navigation deadline exceeded');
   // Evaluation waits for the current page's document before importing fixtures.
   const running = command('Runtime.evaluate', {
-    expression: `(async () => { while (document.readyState === 'loading') await new Promise(r => setTimeout(r, 10)); return await (await import('/browser/contract.mjs')).runBrowserContract(${profileSource ? "{ profileApi: await import('/cfrm-profiles/index.js') }" : ''}); })()`,
+    expression: `(async () => { globalThis.cmsgContractProgress = { phase: 'browser contract: load fixture', passed: [] }; while (document.readyState === 'loading') await new Promise(r => setTimeout(r, 10)); return await (await import('/browser/contract.mjs')).runBrowserContract({ ${profileSource ? "profileApi: await import('/cfrm-profiles/index.js')," : ''} onProgress: progress => { globalThis.cmsgContractProgress = progress; } }); })()`,
     awaitPromise: true, returnByValue: true,
   });
   const result = await Promise.race([running, new Promise((_, reject) => {
@@ -147,6 +147,31 @@ try {
     runtime: process.version, profileSource, contract: result.result.value, unexpectedExternalRequests: forbiddenRequests };
   await writeFile(artifact, JSON.stringify(evidence, null, 2) + '\n');
   process.stdout.write(JSON.stringify(evidence) + '\n');
+} catch (error) {
+  // Capture only fixed fixture phase/completion labels before closing the page.
+  // A hung CDP connection must not hold cleanup or replace the original error.
+  let progress;
+  let snapshotDeadline;
+  try {
+    if (socket?.readyState === 1) {
+      const snapshot = await Promise.race([
+        command('Runtime.evaluate', { expression: 'globalThis.cmsgContractProgress', returnByValue: true }),
+        new Promise((_, reject) => { snapshotDeadline = setTimeout(() => reject(new Error('Progress unavailable')), 5000); }),
+      ]);
+      const value = snapshot.result?.value;
+      if (value && typeof value.phase === 'string' && value.phase.length <= 240
+          && Array.isArray(value.passed) && value.passed.length <= 64
+          && value.passed.every(label => typeof label === 'string' && label.length <= 240)) {
+        progress = { phase: value.phase, passed: value.passed };
+      }
+    }
+  } catch { /* preserve the contract failure */ }
+  finally { clearTimeout(snapshotDeadline); }
+  const failure = { source: process.env.CI_COMMIT_SHA, runtime: process.version, profileSource,
+    status: 'failed', progress: progress ?? { phase: 'unavailable', passed: [] } };
+  await writeFile(artifact + '.failure.json', JSON.stringify(failure, null, 2) + '\n').catch(() => {});
+  process.stderr.write(JSON.stringify(failure) + '\n');
+  throw error;
 } finally {
   clearTimeout(deadline);
   socket?.close();
