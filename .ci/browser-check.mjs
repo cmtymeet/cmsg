@@ -21,7 +21,9 @@ if (process.env.CFRM_SOURCE_ARCHIVE || process.env.CFRM_SOURCE_COMMIT || process
   }
   const archive = await readFile(archivePath);
   if (createHash('sha256').update(archive).digest('hex') !== expectedHash) throw new Error('cfrm archive checksum mismatch');
-  const identified = spawnSync('git', ['get-tar-commit-id'], { input: archive, encoding: 'utf8' });
+  // git reads only the first 1024 bytes; a whole-archive pipe can fail with
+  // EPIPE after it has already returned the correct commit.
+  const identified = spawnSync('git', ['get-tar-commit-id'], { input: archive.subarray(0, 1024), encoding: 'utf8' });
   if (identified.error || identified.status !== 0 || identified.stdout.trim() !== commit) throw new Error('cfrm archive commit mismatch');
   // Serve only these verified source modules. No repository directory, test
   // secrets, package installation, or external endpoint is exposed to the page.
