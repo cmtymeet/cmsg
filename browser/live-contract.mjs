@@ -45,10 +45,29 @@ export async function runLiveStreamContract(a,b,key,context,saveA,saveB,report=(
  // succeeds. A failed write must free it while preserving durable peer history.
  const [sc,sd]=pair();
  report('live adapter: reopen pair for failed ACK');
- const [lc,ld]=await Promise.all([
-  LiveInboxStream.open(sc,a,{peerDevice:b.chatPublicKey(),until,key,context,persist:saveA}),
-  LiveInboxStream.open(sd,b,{peerDevice:a.chatPublicKey(),until,key,context,persist:saveB}),
- ]);
+ // Fixed endpoint/operation labels distinguish a blocked opening from time
+ // spent in actual Wasm publication. Never report arguments or results.
+ const traceOpening=(inbox,side)=>{
+  const originals=new Map();
+  for(const [method,label] of Object.entries({beginLiveSession:'begin session',receive:'receive frame',clearLiveControlsFor:'clear controls'})) {
+   const original=inbox[method];originals.set(method,original);
+   inbox[method]=async function(...args) {
+    report(`live adapter: reopen ${side} ${label} start`);
+    try {const result=await original.apply(this,args);report(`live adapter: reopen ${side} ${label} complete`);return result;}
+    catch(error){report(`live adapter: reopen ${side} ${label} rejected`);throw error;}
+   };
+  }
+  return ()=>{for(const [method,original] of originals)inbox[method]=original;};
+ };
+ const restoreA=traceOpening(a,'sender'),restoreB=traceOpening(b,'recipient');
+ let opened;
+ try {
+  opened=await Promise.all([
+   LiveInboxStream.open(sc,a,{peerDevice:b.chatPublicKey(),until,key,context,persist:saveA}),
+   LiveInboxStream.open(sd,b,{peerDevice:a.chatPublicKey(),until,key,context,persist:saveB}),
+  ]);
+ } finally {restoreA();restoreB();}
+ const [lc,ld]=opened;
  const originalReceive=b.receive;
  let receivedPayloads=0,freedPayloads=0;
  b.receive=async function(...args) {

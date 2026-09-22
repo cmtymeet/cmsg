@@ -112,6 +112,14 @@ try {
       }
     } else if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') {
       loaded.add(message.params.loaderId);
+    } else if (message.method === 'Runtime.bindingCalled' && message.params.name === 'cmsgReportProgress') {
+      try {
+        const value = JSON.parse(message.params.payload);
+        if (typeof value.phase === 'string' && value.phase.length <= 240
+            && Number.isSafeInteger(value.elapsedMs) && value.elapsedMs >= 0) {
+          process.stdout.write(JSON.stringify({ browserProgress: { phase: value.phase, elapsedMs: value.elapsedMs } }) + '\n');
+        }
+      } catch { /* unrelated or malformed diagnostic input is not evidence */ }
     } else if (message.method === 'Fetch.requestPaused') {
       const { requestId, request } = message.params;
       if (request.url.startsWith(origin + '/')) {
@@ -125,6 +133,7 @@ try {
   await command('Page.enable');
   await command('Page.setLifecycleEventsEnabled', { enabled: true });
   await command('Runtime.enable');
+  await command('Runtime.addBinding', { name: 'cmsgReportProgress' });
   await command('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
   const navigation = await command('Page.navigate', { url: origin });
   if (navigation.errorText || !navigation.loaderId) throw new Error('Browser navigation failed');
@@ -134,7 +143,7 @@ try {
   if (!loaded.has(navigation.loaderId)) throw new Error('Browser navigation deadline exceeded');
   // Evaluation waits for the current page's document before importing fixtures.
   const running = command('Runtime.evaluate', {
-    expression: `(async () => { globalThis.cmsgContractProgress = { phase: 'browser contract: load fixture', passed: [] }; while (document.readyState === 'loading') await new Promise(r => setTimeout(r, 10)); return await (await import('/browser/contract.mjs')).runBrowserContract({ ${profileSource ? "profileApi: await import('/cfrm-profiles/index.js')," : ''} onProgress: progress => { globalThis.cmsgContractProgress = progress; } }); })()`,
+    expression: `(async () => { globalThis.cmsgContractProgress = { phase: 'browser contract: load fixture', elapsedMs: 0, passed: [] }; while (document.readyState === 'loading') await new Promise(r => setTimeout(r, 10)); return await (await import('/browser/contract.mjs')).runBrowserContract({ ${profileSource ? "profileApi: await import('/cfrm-profiles/index.js')," : ''} onProgress: progress => { globalThis.cmsgContractProgress = progress; globalThis.cmsgReportProgress(JSON.stringify({ phase: progress.phase, elapsedMs: progress.elapsedMs })); } }); })()`,
     awaitPromise: true, returnByValue: true,
   });
   const result = await Promise.race([running, new Promise((_, reject) => {
@@ -160,9 +169,10 @@ try {
       ]);
       const value = snapshot.result?.value;
       if (value && typeof value.phase === 'string' && value.phase.length <= 240
+          && Number.isSafeInteger(value.elapsedMs) && value.elapsedMs >= 0
           && Array.isArray(value.passed) && value.passed.length <= 64
           && value.passed.every(label => typeof label === 'string' && label.length <= 240)) {
-        progress = { phase: value.phase, passed: value.passed };
+        progress = { phase: value.phase, elapsedMs: value.elapsedMs, passed: value.passed };
       }
     }
   } catch { /* preserve the contract failure */ }

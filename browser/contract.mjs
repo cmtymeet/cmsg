@@ -121,7 +121,8 @@ async function liveHandshake(a,b,key,context,saveA,saveB) {
 
 export async function runBrowserContract({ profileApi, onProgress = () => {} } = {}) {
   const passed = [];
-  const report = phase => onProgress({ phase, passed: [...passed] });
+  const started = performance.now();
+  const report = phase => onProgress({ phase, elapsedMs: Math.round(performance.now() - started), passed: [...passed] });
   const completed = (...labels) => { passed.push(...labels); report(labels.at(-1)); };
   report('browser contract: initialize generated Wasm');
   await init({ module_or_path: new URL('./pkg/cmsg_bg.wasm', import.meta.url) });
